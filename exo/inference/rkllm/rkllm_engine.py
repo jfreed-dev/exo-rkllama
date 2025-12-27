@@ -98,13 +98,18 @@ class RKLLMInferenceEngine(InferenceEngine):
 
   async def sample(self, x: np.ndarray, temp: float = 0.0, top_p: float = 1.0) -> np.ndarray:
     """
-    Sample next token from logits.
+    Sample next token from logits or return pre-sampled token.
 
-    Note: RKLLM handles sampling internally during generation.
-    This method is provided for interface compliance.
+    For RKLLM, infer_tensor returns token IDs directly (shape 1,1),
+    not logits. This method detects this and returns the token as-is.
     """
-    # For RKLLM HTTP mode, sampling is done server-side
-    # This is a fallback for when we have raw logits
+    # RKLLM returns token IDs directly, not logits
+    # Detect this by checking if the output is a single token
+    if x.ndim == 2 and x.shape == (1, 1):
+      # Already a token ID, return as-is
+      return x.astype(np.int32)
+
+    # Fallback for raw logits (shouldn't happen with RKLLM HTTP mode)
     logits = x[:, -1, :] if x.ndim == 3 else x
 
     if temp == 0:
@@ -160,8 +165,11 @@ class RKLLMInferenceEngine(InferenceEngine):
     """
     Run inference on input tensor.
 
-    For RKLLM HTTP mode, this converts tokens to text, calls the
-    rkllama server, and converts the response back to tokens.
+    RKLLM generates complete responses in one shot, but exo expects
+    token-by-token generation. This method handles the mismatch by:
+    1. On first call (full prompt): generate complete response, cache it
+    2. On subsequent calls: return next token from cache
+    3. When cache exhausted: return EOS token
 
     Args:
       request_id: Unique identifier for this request
@@ -174,6 +182,49 @@ class RKLLMInferenceEngine(InferenceEngine):
     """
     await self.ensure_shard(shard)
 
+    # Initialize or get inference state
+    if inference_state is None:
+      inference_state = {}
+
+    # Get EOS token ID
+    eos_token_id = 151643  # Default for Qwen models
+    if self._tokenizer and hasattr(self._tokenizer, 'eos_token_id'):
+      eos_token_id = self._tokenizer.eos_token_id or eos_token_id
+
+    # Check if we have cached response tokens for this request
+    cache_key = f"response_tokens_{request_id}"
+    index_key = f"token_index_{request_id}"
+
+    if cache_key in self.session:
+      # Continuation: return next token from cache
+      cached_tokens = self.session[cache_key]
+      token_index = self.session.get(index_key, 0)
+
+      if token_index < len(cached_tokens):
+        # Return next token
+        next_token = cached_tokens[token_index]
+        self.session[index_key] = token_index + 1
+
+        if DEBUG >= 2:
+          print(f"RKLLM returning cached token {token_index}/{len(cached_tokens)}: {next_token}")
+
+        # Return as logits-like array (token ID)
+        output = np.array([[next_token]], dtype=np.int32)
+        return output, inference_state
+      else:
+        # All tokens returned, signal end with EOS
+        if DEBUG >= 2:
+          print(f"RKLLM generation complete, returning EOS")
+
+        # Clean up session
+        del self.session[cache_key]
+        if index_key in self.session:
+          del self.session[index_key]
+
+        output = np.array([[eos_token_id]], dtype=np.int32)
+        return output, inference_state
+
+    # First call: generate complete response
     if DEBUG >= 2:
       print(f"RKLLM infer_tensor: request_id={request_id}, "
             f"input_shape={input_data.shape}, dtype={input_data.dtype}")
@@ -185,10 +236,8 @@ class RKLLMInferenceEngine(InferenceEngine):
       else:
         prompt = bytes(input_data.flatten().tolist()).decode('utf-8', errors='replace')
     else:
-      # Float input - this is hidden states, not supported in HTTP mode
       raise ValueError(
-        "RKLLM HTTP mode only supports token input, not hidden states. "
-        "For distributed inference with hidden states, use direct mode."
+        "RKLLM HTTP mode only supports token input, not hidden states."
       )
 
     if DEBUG >= 2:
@@ -198,20 +247,28 @@ class RKLLMInferenceEngine(InferenceEngine):
     result_text = await self._http_client.generate_from_prompt(prompt)
 
     if DEBUG >= 2:
-      print(f"RKLLM response: {result_text[:100]}...")
+      print(f"RKLLM response: {result_text[:200]}...")
 
-    # Encode result back to tokens
+    # Encode result to tokens and cache
     if self._tokenizer and result_text:
       result_tokens = await asyncio.get_running_loop().run_in_executor(
         self._executor,
         self._tokenizer.encode,
         result_text
       )
-      output = np.array(result_tokens).reshape(1, -1)
-    else:
-      # Fallback or empty response
-      output = np.array(list(result_text.encode('utf-8') if result_text else [0]), dtype=np.int32).reshape(1, -1)
+      # Cache the tokens for subsequent calls
+      self.session[cache_key] = result_tokens
+      self.session[index_key] = 1  # Start from second token
 
+      if len(result_tokens) > 0:
+        # Return first token
+        output = np.array([[result_tokens[0]]], dtype=np.int32)
+        if DEBUG >= 2:
+          print(f"RKLLM cached {len(result_tokens)} tokens, returning first: {result_tokens[0]}")
+        return output, inference_state
+
+    # No tokens generated, return EOS
+    output = np.array([[eos_token_id]], dtype=np.int32)
     return output, inference_state
 
   async def load_checkpoint(self, shard: Shard, path: str):
