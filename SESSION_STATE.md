@@ -8,22 +8,9 @@
 - **Exo with RKLLM engine** running on node1 (10.10.88.73:52415)
 - **RKLLAMA server** running on node1 (10.10.88.73:8080) - OLD VERSION (d0392d7)
 - **DeepSeek-R1-1.5B** model loaded and functional (~8 tok/s)
-- **Qwen2.5-1.5B-Instruct** model loaded and functional (~6.5 tok/s)
+- **Qwen2.5-1.5B-Instruct** model loaded and functional (~7.8 tok/s)
 - **Token caching mechanism** working
 - **Prompt template extraction** working
-
-### Test Results (Latest)
-```
-Model: Qwen2.5-1.5B-Instruct (RKLLM 1.1.4)
-Test: What is 25 + 17?
-Answer: 42 (correct)
-Speed: ~6.5 tokens/sec on RK3588 NPU
-
-Model: DeepSeek-R1-1.5B
-Test: What is 25 + 17?
-Answer: 42 (correct with chain-of-thought reasoning)
-Speed: ~8 tokens/sec on RK3588 NPU
-```
 
 ### Available Models
 | Model ID | Directory | Status |
@@ -32,14 +19,65 @@ Speed: ~8 tokens/sec on RK3588 NPU
 | `qwen2.5-1.5b-instruct-rkllm` | Qwen2.5-1.5B-Instruct | Working |
 | `qwen2.5-1.5b-rkllm` | Qwen2.5-1.5B | Not installed |
 
-### Resolved Issues
+## Benchmark Results
+
+### Performance Comparison (RK3588 NPU)
+
+#### Qwen2.5-1.5B-Instruct (w8a8)
+| Test            | Tokens/sec | Total Tokens | Completion Tokens |
+|-----------------|------------|--------------|-------------------|
+| Math            | 7.23       | 56           | 23                |
+| Explanation     | 7.81       | 57           | 29                |
+| Code Generation | 8.21       | 189          | 156               |
+| Reasoning       | 8.09       | 253          | 222               |
+| Creative        | 7.48       | 54           | 26                |
+| **AVERAGE**     | **7.76**   | **122**      | **91**            |
+
+#### DeepSeek-R1-1.5B (chain-of-thought)
+| Test            | Tokens/sec | Total Tokens | Completion Tokens |
+|-----------------|------------|--------------|-------------------|
+| Math            | 7.95       | 534          | 501               |
+| Explanation     | 7.75       | 1027         | 999               |
+| Code Generation | 7.92       | 674          | 641               |
+| Reasoning       | 7.86       | 659          | 628               |
+| Creative        | 8.07       | 240          | 212               |
+| **AVERAGE**     | **7.91**   | **627**      | **596**           |
+
+### Summary Comparison
+| Metric | Qwen2.5-1.5B-Instruct | DeepSeek-R1-1.5B |
+|--------|----------------------|------------------|
+| **Avg Speed** | 7.76 tok/s | 7.91 tok/s |
+| **Avg Completion Tokens** | 91 | 596 |
+| **Token Efficiency** | 6.5x fewer tokens | Verbose |
+| **Response Style** | Concise, direct | Chain-of-thought reasoning |
+| **Best For** | Quick answers, APIs | Explanations, reasoning tasks |
+
+### Key Findings
+1. **Speed**: Both models perform similarly at ~7.8-8.0 tokens/sec
+2. **Token Efficiency**: Qwen generates 6.5x fewer tokens for same prompts
+3. **Response Time**: Qwen ~3-32s, DeepSeek ~30-130s (more tokens)
+4. **Use Cases**:
+   - Qwen: Chatbots, APIs, quick Q&A, production
+   - DeepSeek: Educational content, complex problem-solving
+
+### Sample Responses
+
+**Math (145 + 278):**
+- Qwen: `Solution: $$ 145 + 278 = \boxed{423} $$` (23 tokens)
+- DeepSeek: Full step-by-step carry-over explanation (501 tokens)
+
+**Haiku about AI:**
+- Qwen: `Code writes, learns, / Silent hands of data flow, / Future in its grasp.`
+- DeepSeek: Extended explanation with interpretation of each line
+
+## Resolved Issues
 
 1. **Qwen2.5-1.5B model now working**
    - Downloaded pre-converted model from HuggingFace (c01zaut/Qwen2.5-1.5B-Instruct-RK3588-1.1.4)
    - Model converted with RKLLM toolkit 1.1.4, matching node runtime
    - Works correctly through both rkllama and exo
 
-### Known Issues
+## Known Issues
 
 1. **New rkllama (upstream) incompatible**
    - Updated to upstream (004dc88) - 142 commits ahead
