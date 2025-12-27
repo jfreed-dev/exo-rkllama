@@ -40,9 +40,14 @@
 
 **Recommendations:**
 - [ ] Increase `max_new_tokens` for DeepSeek models (4096+)
-- [ ] Implement streaming to show reasoning in real-time
+- [x] ~~Implement streaming to show reasoning in real-time~~ **Implemented 2025-12-27**
+  - Added `generate_stream()` and `generate_from_prompt_stream()` to HTTP client
+  - Added `_infer_tensor_streaming()` to rkllm_engine.py
+  - DeepSeek models auto-enable streaming (STREAMING_MODELS set)
+  - **Note:** DeepSeek still outputs `[PAD151935]` tokens - these are thinking tokens not in vocabulary
 - [ ] Consider post-processing to extract final answer from `<think>` blocks
 - [ ] Add request timeout configuration per model
+- [ ] Investigate DeepSeek thinking token vocabulary (151935 = `<think>` token?)
 
 ## Model Expansion
 
@@ -69,10 +74,11 @@
 ## Feature Enhancements
 
 ### Streaming Support
-- [ ] **Add streaming support to RKLLM HTTP client**
-  - Currently only non-streaming mode works
-  - Implement SSE/chunked response handling
-  - Update `generate()` method in `rkllm_http_client.py`
+- [x] ~~**Add streaming support to RKLLM HTTP client**~~ **DONE 2025-12-27**
+  - Added `generate_stream()` async generator for SSE/chunked responses
+  - Added `generate_from_prompt_stream()` for pre-templated prompts
+  - Auto-enabled for DeepSeek models via `STREAMING_MODELS` set
+  - Qwen models continue to use token caching (faster for short responses)
 
 ### Multi-Node Support
 - [ ] **Implement multi-node load balancing**
@@ -118,6 +124,7 @@
 - [x] Benchmark Qwen vs DeepSeek performance
 - [x] Document benchmark results and findings
 - [x] Fix RKLLM 1.2.3 ABI compatibility in rkllama fork
+- [x] Add streaming support to HTTP client and engine (2025-12-27)
 
 ---
 

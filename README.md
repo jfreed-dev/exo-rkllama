@@ -121,13 +121,13 @@ Models require pre-converted `.rkllm` files in `~/RKLLAMA/models/`. See [rkllm-t
 | Qwen2.5-1.5B-Instruct | ✅ | Tested, ~7.8 tok/s, recommended |
 | Systemd services | ✅ | Auto-start on boot |
 | Web UI (tinychat) | ✅ | Works at localhost:52415 |
+| Streaming responses | ✅ | Async generator for real-time token output |
 
 ### Not Working / Known Issues
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| DeepSeek-R1-1.5B | ⚠️ | Long chain-of-thought causes timeouts, needs streaming |
-| Streaming responses | ⚠️ | Code exists, not fully integrated |
+| DeepSeek-R1-1.5B | ⚠️ | Thinking tokens (`[PAD151935]`) not decoded properly |
 | Layer sharding | ❌ | By design - RKLLM loads full models only |
 | Multi-node distribution | ❌ | By design - use load balancer instead |
 | Direct ctypes mode | ⚠️ | Fallback only, HTTP mode recommended |
@@ -137,7 +137,7 @@ Models require pre-converted `.rkllm` files in `~/RKLLAMA/models/`. See [rkllm-t
 
 | Feature | Priority | Description |
 |---------|----------|-------------|
-| Streaming support | Medium | SSE/chunked responses for real-time output |
+| DeepSeek thinking tokens | High | Decode `[PAD151935]` thinking tokens properly |
 | Convert 3B/7B models | Medium | Larger models for better quality |
 | Multi-node load balancing | Medium | HAProxy/nginx config for request parallelism |
 | Health monitoring | Low | Prometheus metrics, Grafana dashboard |
@@ -147,6 +147,7 @@ Models require pre-converted `.rkllm` files in `~/RKLLAMA/models/`. See [rkllm-t
 
 | Feature | Date | Notes |
 |---------|------|-------|
+| Streaming support | 2025-12-27 | Async generator streaming in HTTP client and engine |
 | RKLLM runtime 1.2.3 | 2025-12-27 | Updated rkllama fork with correct ABI structures |
 
 See [TODO.md](TODO.md) for detailed task list.
