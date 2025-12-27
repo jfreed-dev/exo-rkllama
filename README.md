@@ -107,6 +107,46 @@ curl http://localhost:52415/v1/chat/completions \
 
 Models require pre-converted `.rkllm` files in `~/RKLLAMA/models/`. See [rkllm-toolkit](https://github.com/jfreed-dev/rkllm-toolkit) for conversion.
 
+## Status Matrix
+
+### Working
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Basic inference | ✅ | Via HTTP client to rkllama server |
+| ChatGPT-compatible API | ✅ | `/v1/chat/completions` endpoint |
+| Token caching | ✅ | Handles RKLLM batch-style generation |
+| Model loading/unloading | ✅ | Hot-swap models via HTTP API |
+| HuggingFace tokenizers | ✅ | Auto-downloads tokenizers |
+| Qwen2.5-1.5B-Instruct | ✅ | Tested, ~7.8 tok/s |
+| DeepSeek-R1-1.5B | ✅ | Tested, ~7.9 tok/s |
+| Systemd services | ✅ | Auto-start on boot |
+| Web UI (tinychat) | ✅ | Works at localhost:52415 |
+
+### Not Working / Known Issues
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Streaming responses | ⚠️ | Code exists, not fully integrated |
+| Layer sharding | ❌ | By design - RKLLM loads full models only |
+| Multi-node distribution | ❌ | By design - use load balancer instead |
+| RKLLM runtime 1.2.3 | ❌ | Causes output corruption (`&&&` chars) |
+| Direct ctypes mode | ⚠️ | Fallback only, HTTP mode recommended |
+| Qwen2.5-3B+ models | ❓ | Not yet converted/tested |
+
+### Planned / TODO
+
+| Feature | Priority | Description |
+|---------|----------|-------------|
+| Fix runtime 1.2.3 compat | High | Debug output corruption with newer rkllama |
+| Streaming support | Medium | SSE/chunked responses for real-time output |
+| Convert 3B/7B models | Medium | Larger models for better quality |
+| Multi-node load balancing | Medium | HAProxy/nginx config for request parallelism |
+| Health monitoring | Low | Prometheus metrics, Grafana dashboard |
+| Deployment guide | Low | Full setup documentation |
+
+See [TODO.md](TODO.md) for detailed task list.
+
 ## Limitations
 
 **Single Node Only**: RKLLM loads complete models - no layer sharding across nodes. For multiple RK3588 devices, use request-level parallelism (load balancer) instead of layer-level distribution.
