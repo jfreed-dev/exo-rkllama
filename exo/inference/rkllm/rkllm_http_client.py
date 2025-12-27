@@ -167,15 +167,17 @@ class RKLLMHTTPClient:
   async def generate(
     self,
     messages: List[Dict[str, str]],
-    stream: bool = False
+    stream: bool = False,
+    model: str = None
   ) -> str:
     """
-    Generate text from messages.
+    Generate text from messages using OpenAI-compatible endpoint.
 
     Args:
       messages: List of message dicts with 'role' and 'content' keys
                 e.g., [{"role": "user", "content": "Hello"}]
       stream: Whether to stream the response
+      model: Model name (optional, uses loaded model if not specified)
 
     Returns:
       Generated text response
@@ -186,9 +188,12 @@ class RKLLMHTTPClient:
         "messages": messages,
         "stream": stream
       }
+      if model:
+        payload["model"] = model
 
+      # Use OpenAI-compatible endpoint (works with updated rkllama)
       async with session.post(
-        f"{self.config.base_url}/generate",
+        f"{self.config.base_url}/v1/chat/completions",
         json=payload
       ) as resp:
         if resp.status == 200:
@@ -201,7 +206,11 @@ class RKLLMHTTPClient:
                   import json
                   data = json.loads(line.decode('utf-8').strip())
                   if data.get("choices"):
-                    content = data["choices"][0].get("content", "")
+                    # OpenAI format: choices[0].message.content or choices[0].delta.content
+                    choice = data["choices"][0]
+                    content = choice.get("message", {}).get("content", "")
+                    if not content:
+                      content = choice.get("delta", {}).get("content", "")
                     full_text += content
                 except (json.JSONDecodeError, KeyError):
                   continue
@@ -209,7 +218,8 @@ class RKLLMHTTPClient:
           else:
             data = await resp.json()
             if data.get("choices"):
-              return data["choices"][0].get("content", "")
+              # OpenAI format: choices[0].message.content
+              return data["choices"][0].get("message", {}).get("content", "")
             return ""
         else:
           error = await resp.text()
