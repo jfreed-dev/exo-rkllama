@@ -227,13 +227,42 @@ class RKLLMHTTPClient:
 
   async def generate_from_prompt(self, prompt: str) -> str:
     """
-    Convenience method to generate from a simple prompt string.
+    Generate from a prompt string, handling pre-templated prompts.
+
+    If the prompt contains chat template markers (e.g., from exo),
+    extract the user content to avoid double-templating.
 
     Args:
-      prompt: The user prompt text
+      prompt: The user prompt text (may be pre-templated)
 
     Returns:
       Generated text response
     """
-    messages = [{"role": "user", "content": prompt}]
+    import re
+
+    # Check if prompt is already templated (exo uses special tokens)
+    # Common patterns: <｜User｜>, <|user|>, [INST], etc.
+    user_markers = [
+      (r'<｜User｜>(.*?)<｜Assistant｜>', 1),
+      (r'<\|user\|>(.*?)<\|assistant\|>', 1),
+      (r'\[INST\](.*?)\[/INST\]', 1),
+      (r'<\|im_start\|>user\n(.*?)<\|im_end\|>', 1),
+    ]
+
+    extracted_content = None
+    for pattern, group in user_markers:
+      match = re.search(pattern, prompt, re.DOTALL | re.IGNORECASE)
+      if match:
+        extracted_content = match.group(group).strip()
+        break
+
+    if extracted_content:
+      # Use extracted content to avoid double-templating
+      if DEBUG >= 2:
+        print(f"Extracted user content from template: {extracted_content[:100]}...")
+      messages = [{"role": "user", "content": extracted_content}]
+    else:
+      # Use prompt as-is
+      messages = [{"role": "user", "content": prompt}]
+
     return await self.generate(messages, stream=False)
