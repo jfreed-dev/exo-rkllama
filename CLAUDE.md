@@ -120,7 +120,101 @@ Note: RKLLM models require pre-converted `.rkllm` files in `~/RKLLAMA/models/`. 
 - `EXO_HOME` - Override default model cache directory (`~/.cache/exo/downloads/`)
 - `HF_ENDPOINT` - Custom HuggingFace endpoint
 - `DEBUG`, `DEBUG_DISCOVERY` - Debug verbosity levels
-- `RKLLM_LIB_PATH` - Path to librkllmrt.so for RKLLM engine (default: `~/RKLLAMA/lib/librkllmrt.so`)
+- `RKLLM_SERVER_HOST` - RKLLAMA server hostname (default: `localhost`)
+- `RKLLM_SERVER_PORT` - RKLLAMA server port (default: `8080`)
+
+## RKLLM Engine (Rockchip RK3588 NPU)
+
+### Architecture Flow
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         Request Flow                             │
+│                                                                  │
+│  User ──▶ ChatGPT API ──▶ Node ──▶ RKLLMEngine ──▶ HTTP Client  │
+│             :52415                                      │        │
+│                                                         ▼        │
+│                                               ┌─────────────────┐│
+│                                               │ RKLLAMA Server  ││
+│                                               │    :8080        ││
+│                                               └────────┬────────┘│
+│                                                        ▼         │
+│                                               ┌─────────────────┐│
+│                                               │  RK3588 NPU     ││
+│                                               │  6 TOPS INT8    ││
+│                                               └─────────────────┘│
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Token Generation Flow
+
+RKLLM generates complete responses, but exo expects token-by-token:
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│  1. First Call (full prompt)                                    │
+│     ┌──────────┐    ┌──────────┐    ┌──────────────────────┐   │
+│     │ Prompt   │───▶│ Generate │───▶│ Cache all tokens     │   │
+│     │ Tokens   │    │ via HTTP │    │ Return token[0]      │   │
+│     └──────────┘    └──────────┘    └──────────────────────┘   │
+│                                                                 │
+│  2. Subsequent Calls (single token input)                       │
+│     ┌──────────┐    ┌──────────┐    ┌──────────────────────┐   │
+│     │ Token    │───▶│ Lookup   │───▶│ Return token[n++]    │   │
+│     │ Input    │    │ Cache    │    │ (skip HTTP call)     │   │
+│     └──────────┘    └──────────┘    └──────────────────────┘   │
+│                                                                 │
+│  3. Final Call (cache exhausted)                                │
+│     ┌──────────┐    ┌──────────┐    ┌──────────────────────┐   │
+│     │ Token    │───▶│ Cache    │───▶│ Return EOS token     │   │
+│     │ Input    │    │ Empty    │    │ Clean up session     │   │
+│     └──────────┘    └──────────┘    └──────────────────────┘   │
+└────────────────────────────────────────────────────────────────┘
+```
+
+### Setup on RK3588
+
+```bash
+# 1. Start RKLLAMA server on RK3588 device
+cd /opt/rkllama
+source venv/bin/activate
+python server.py --target_platform rk3588 --port 8080
+
+# 2. Start exo with RKLLM engine
+RKLLM_SERVER_HOST=localhost RKLLM_SERVER_PORT=8080 \
+  python -m exo.main --inference-engine rkllm --disable-tui
+```
+
+### Important Limitations
+
+**Single Node Only**: RKLLM loads complete models - no layer sharding across nodes.
+
+```
+❌ Multi-node layer sharding:     ✅ Single node (supported):
+   Node1[L0-7] → Node2[L8-14]        Node1[All Layers]
+```
+
+For multiple RK3588 devices, use request-level parallelism (load balancer) instead.
+
+### RKLLM Models in models.py
+
+```python
+"deepseek-r1-1.5b-rkllm": {
+  "layers": 28,
+  "repo": {
+    "RKLLMInferenceEngine": "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",  # for tokenizer
+  },
+}
+```
+
+Models require pre-converted `.rkllm` files in `~/RKLLAMA/models/`. See [rkllm-toolkit](https://github.com/jfreed-dev/rkllm-toolkit) for conversion.
+
+### Detailed Documentation
+
+See `exo/inference/rkllm/README.md` for complete RKLLM documentation including:
+- Full architecture diagrams
+- API reference
+- Troubleshooting guide
 
 ## Related Repositories
 
