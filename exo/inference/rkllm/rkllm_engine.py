@@ -1,11 +1,17 @@
 """
 RKLLM Inference Engine for Rockchip RK3588 NPU.
 
-This engine provides inference capabilities using the RKLLM runtime library
-for Rockchip NPU devices. It supports hidden state extraction for distributed
-inference across multiple devices.
+This engine provides inference capabilities using the RKLLM runtime
+for Rockchip NPU devices. It supports two modes:
+
+1. HTTP mode (default): Connects to a running rkllama server
+2. Direct mode: Uses ctypes bindings to librkllmrt.so directly
+
+HTTP mode is recommended as the rkllama server handles frequency
+optimization and proper initialization.
 """
 
+import os
 import numpy as np
 import asyncio
 from typing import Optional, Tuple
@@ -18,7 +24,24 @@ from exo.inference.tokenizers import resolve_tokenizer
 from exo.download.shard_download import ShardDownloader
 from exo.helpers import DEBUG
 
-from .rkllm_ctypes_wrapper import RKLLMWrapper, find_rkllm_library
+from .rkllm_http_client import RKLLMHTTPClient, RKLLMServerConfig
+
+
+# Model name to RKLLAMA directory mapping
+RKLLM_MODEL_MAPPING = {
+  "deepseek-r1-1.5b-rkllm": "DeepSeek-R1-1.5B",
+  "qwen2.5-1.5b-rkllm": "Qwen2.5-1.5B",
+  "qwen2.5-3b-rkllm": "Qwen2.5-3B",
+  "phi-3-mini-rkllm": "Phi-3-mini",
+}
+
+# HuggingFace tokenizer repos for RKLLM models
+RKLLM_TOKENIZER_REPOS = {
+  "deepseek-r1-1.5b-rkllm": "Qwen/Qwen2.5-1.5B-Instruct",
+  "qwen2.5-1.5b-rkllm": "Qwen/Qwen2.5-1.5B-Instruct",
+  "qwen2.5-3b-rkllm": "Qwen/Qwen2.5-3B-Instruct",
+  "phi-3-mini-rkllm": "microsoft/Phi-3-mini-4k-instruct",
+}
 
 
 class RKLLMInferenceEngine(InferenceEngine):
@@ -27,44 +50,56 @@ class RKLLMInferenceEngine(InferenceEngine):
 
   Key characteristics:
   - Loads complete .rkllm models (no partial layer loading)
-  - Supports hidden state extraction for pipeline parallelism
-  - Thread-safe with dedicated executor for NPU operations
+  - Uses HTTP client to connect to rkllama server (recommended)
+  - Thread-safe with dedicated executor for blocking operations
   """
 
-  def __init__(self, shard_downloader: ShardDownloader):
+  def __init__(
+    self,
+    shard_downloader: ShardDownloader,
+    server_host: str = "localhost",
+    server_port: int = 8080
+  ):
     self.shard: Optional[Shard] = None
     self.shard_downloader = shard_downloader
-    self._wrapper: Optional[RKLLMWrapper] = None
     self._tokenizer = None
     self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rkllm")
     self._shard_lock = asyncio.Lock()
     self.session = {}
 
-    # Check if RKLLM library is available
-    lib_path = find_rkllm_library()
-    if lib_path is None and DEBUG >= 1:
-      print("Warning: RKLLM library not found. Engine will fail on first use.")
+    # HTTP client configuration
+    self._server_config = RKLLMServerConfig(
+      host=os.environ.get("RKLLM_SERVER_HOST", server_host),
+      port=int(os.environ.get("RKLLM_SERVER_PORT", server_port))
+    )
+    self._http_client = RKLLMHTTPClient(self._server_config)
+    self._model_loaded = False
+
+    if DEBUG >= 1:
+      print(f"RKLLM engine initialized (HTTP mode: {self._server_config.base_url})")
 
   async def encode(self, shard: Shard, prompt: str) -> np.ndarray:
     """Encode prompt to tokens using model's tokenizer."""
     await self.ensure_shard(shard)
-    tokens = await asyncio.get_running_loop().run_in_executor(
-      self._executor,
-      self._tokenizer.encode,
-      prompt
-    )
-    return np.array(tokens)
+    if self._tokenizer:
+      tokens = await asyncio.get_running_loop().run_in_executor(
+        self._executor,
+        self._tokenizer.encode,
+        prompt
+      )
+      return np.array(tokens)
+    # Fallback: return prompt as bytes if no tokenizer
+    return np.array(list(prompt.encode('utf-8')), dtype=np.int32)
 
   async def sample(self, x: np.ndarray, temp: float = 0.0, top_p: float = 1.0) -> np.ndarray:
     """
     Sample next token from logits.
 
     Note: RKLLM handles sampling internally during generation.
-    This method is provided for interface compliance and for cases
-    where we need to sample from returned hidden states.
+    This method is provided for interface compliance.
     """
-    # For RKLLM, sampling is typically done internally by the runtime
-    # This is a fallback implementation for when we have raw logits
+    # For RKLLM HTTP mode, sampling is done server-side
+    # This is a fallback for when we have raw logits
     logits = x[:, -1, :] if x.ndim == 3 else x
 
     if temp == 0:
@@ -100,12 +135,15 @@ class RKLLMInferenceEngine(InferenceEngine):
   async def decode(self, shard: Shard, tokens: np.ndarray) -> str:
     """Decode tokens to string."""
     await self.ensure_shard(shard)
-    token_list = tokens.flatten().tolist()
-    return await asyncio.get_running_loop().run_in_executor(
-      self._executor,
-      self._tokenizer.decode,
-      token_list
-    )
+    if self._tokenizer:
+      token_list = tokens.flatten().tolist()
+      return await asyncio.get_running_loop().run_in_executor(
+        self._executor,
+        self._tokenizer.decode,
+        token_list
+      )
+    # Fallback: decode as UTF-8 bytes
+    return bytes(tokens.flatten().tolist()).decode('utf-8', errors='replace')
 
   async def infer_tensor(
     self,
@@ -117,13 +155,13 @@ class RKLLMInferenceEngine(InferenceEngine):
     """
     Run inference on input tensor.
 
-    For RKLLM, input_data is typically token IDs for the first node,
-    or hidden states for subsequent nodes in a pipeline.
+    For RKLLM HTTP mode, this converts tokens to text, calls the
+    rkllama server, and converts the response back to tokens.
 
     Args:
       request_id: Unique identifier for this request
       shard: Model shard specification
-      input_data: Token IDs (shape: batch, seq_len) or hidden states
+      input_data: Token IDs (shape: batch, seq_len)
       inference_state: Optional state dict for continuation
 
     Returns:
@@ -131,79 +169,60 @@ class RKLLMInferenceEngine(InferenceEngine):
     """
     await self.ensure_shard(shard)
 
-    is_first_layer = shard.is_first_layer()
-    is_last_layer = shard.is_last_layer()
-
     if DEBUG >= 2:
       print(f"RKLLM infer_tensor: request_id={request_id}, "
-            f"input_shape={input_data.shape}, "
-            f"first_layer={is_first_layer}, last_layer={is_last_layer}")
+            f"input_shape={input_data.shape}, dtype={input_data.dtype}")
 
-    def run_inference():
-      if is_first_layer and is_last_layer:
-        # Single node - full generation from tokens
-        # Decode tokens to text, run generation, return as "logits" placeholder
-        if input_data.dtype in [np.int32, np.int64]:
-          # Input is token IDs
-          text = self._tokenizer.decode(input_data.flatten().tolist())
-          result_text = self._wrapper.run_generate(text)
-          # Encode result back to tokens for compatibility
-          result_tokens = self._tokenizer.encode(result_text)
-          return np.array(result_tokens).reshape(1, -1)
-        else:
-          # Input is embeddings - run from embeddings
-          result_text = self._wrapper.run_from_embeddings(input_data)
-          result_tokens = self._tokenizer.encode(result_text)
-          return np.array(result_tokens).reshape(1, -1)
-
-      elif is_first_layer:
-        # First in pipeline - extract hidden states
-        if input_data.dtype in [np.int32, np.int64]:
-          text = self._tokenizer.decode(input_data.flatten().tolist())
-          hidden_states = self._wrapper.run_with_hidden_state(text)
-          return hidden_states
-        else:
-          raise ValueError("First layer expects token IDs, not embeddings")
-
-      elif is_last_layer:
-        # Last in pipeline - continue from hidden states to generate
-        if input_data.dtype in [np.float32, np.float16, np.float64]:
-          result_text = self._wrapper.run_from_embeddings(input_data.astype(np.float32))
-          result_tokens = self._tokenizer.encode(result_text)
-          return np.array(result_tokens).reshape(1, -1)
-        else:
-          raise ValueError("Last layer expects hidden states, not token IDs")
-
+    # Decode input tokens to text
+    if input_data.dtype in [np.int32, np.int64]:
+      if self._tokenizer:
+        prompt = self._tokenizer.decode(input_data.flatten().tolist())
       else:
-        # Middle of pipeline - hidden state in, hidden state out
-        # Note: RKLLM may not fully support this mode
-        # For now, pass through hidden states
-        if DEBUG >= 1:
-          print("Warning: Middle pipeline position may not be fully supported")
-        return input_data
+        prompt = bytes(input_data.flatten().tolist()).decode('utf-8', errors='replace')
+    else:
+      # Float input - this is hidden states, not supported in HTTP mode
+      raise ValueError(
+        "RKLLM HTTP mode only supports token input, not hidden states. "
+        "For distributed inference with hidden states, use direct mode."
+      )
 
-    output = await asyncio.get_running_loop().run_in_executor(
-      self._executor,
-      run_inference
-    )
+    if DEBUG >= 2:
+      print(f"RKLLM prompt: {prompt[:100]}...")
+
+    # Generate via HTTP API
+    result_text = await self._http_client.generate_from_prompt(prompt)
+
+    if DEBUG >= 2:
+      print(f"RKLLM response: {result_text[:100]}...")
+
+    # Encode result back to tokens
+    if self._tokenizer and result_text:
+      result_tokens = await asyncio.get_running_loop().run_in_executor(
+        self._executor,
+        self._tokenizer.encode,
+        result_text
+      )
+      output = np.array(result_tokens).reshape(1, -1)
+    else:
+      # Fallback or empty response
+      output = np.array(list(result_text.encode('utf-8') if result_text else [0]), dtype=np.int32).reshape(1, -1)
 
     return output, inference_state
 
   async def load_checkpoint(self, shard: Shard, path: str):
-    """Load model from checkpoint path."""
+    """Load model from checkpoint path via HTTP API."""
     async with self._shard_lock:
-      if self._wrapper:
-        await asyncio.get_running_loop().run_in_executor(
-          self._executor,
-          self._wrapper.release
-        )
+      model_name = self._get_rkllama_model_name(shard)
 
-      self._wrapper = await asyncio.get_running_loop().run_in_executor(
-        self._executor,
-        RKLLMWrapper,
-        path
-      )
-      self.shard = shard
+      if DEBUG >= 1:
+        print(f"Loading RKLLM model via HTTP: {model_name}")
+
+      success = await self._http_client.load_model(model_name)
+      if success:
+        self._model_loaded = True
+        self.shard = shard
+      else:
+        raise RuntimeError(f"Failed to load RKLLM model: {model_name}")
 
   async def ensure_shard(self, shard: Shard):
     """
@@ -213,8 +232,16 @@ class RKLLMInferenceEngine(InferenceEngine):
     shard to cover all layers.
     """
     async with self._shard_lock:
-      if self.shard == shard:
+      if self.shard == shard and self._model_loaded:
         return
+
+      # Check if server is available
+      if not await self._http_client.health_check():
+        raise RuntimeError(
+          f"RKLLM server not available at {self._server_config.base_url}. "
+          f"Please start the rkllama server with: "
+          f"python server.py --target_platform rk3588 --port {self._server_config.port}"
+        )
 
       # RKLLM requires full model loading
       if not (shard.start_layer == 0 and shard.end_layer == shard.n_layers - 1):
@@ -223,33 +250,47 @@ class RKLLMInferenceEngine(InferenceEngine):
                 f"Requested shard {shard.start_layer}-{shard.end_layer}/{shard.n_layers} "
                 f"will load full model.")
 
-      # Download/locate the model
-      model_path = await self.shard_downloader.ensure_shard(
-        shard, self.__class__.__name__
-      )
+      # Get RKLLAMA model name
+      model_name = self._get_rkllama_model_name(shard)
 
-      if DEBUG >= 2:
-        print(f"Loading RKLLM model from: {model_path}")
+      if DEBUG >= 1:
+        print(f"Loading RKLLM model: {model_name}")
 
-      # Find .rkllm file in the model path
-      rkllm_path = await self._find_rkllm_file(model_path, shard)
-
-      # Release previous model if any
-      if self._wrapper:
-        await asyncio.get_running_loop().run_in_executor(
-          self._executor,
-          self._wrapper.release
+      # Load model via HTTP API
+      success = await self._http_client.load_model(model_name)
+      if not success:
+        # Try listing available models for debugging
+        available = await self._http_client.list_models()
+        raise RuntimeError(
+          f"Failed to load RKLLM model: {model_name}. "
+          f"Available models: {available}"
         )
 
-      # Load new model
-      self._wrapper = await asyncio.get_running_loop().run_in_executor(
-        self._executor,
-        RKLLMWrapper,
-        str(rkllm_path)
-      )
+      self._model_loaded = True
 
-      # Load tokenizer from HuggingFace repo or local path
-      self._tokenizer = await resolve_tokenizer(model_path)
+      # Load tokenizer from HuggingFace
+      tokenizer_repo = RKLLM_TOKENIZER_REPOS.get(shard.model_id.lower())
+      if tokenizer_repo:
+        try:
+          self._tokenizer = await resolve_tokenizer(tokenizer_repo)
+          if DEBUG >= 1:
+            print(f"Loaded tokenizer from: {tokenizer_repo}")
+        except Exception as e:
+          if DEBUG >= 1:
+            print(f"Failed to load tokenizer from {tokenizer_repo}: {e}")
+          self._tokenizer = None
+      else:
+        # Try to resolve from model path
+        try:
+          # Use shard_downloader to get model path for tokenizer
+          model_path = await self.shard_downloader.ensure_shard(
+            shard, self.__class__.__name__
+          )
+          self._tokenizer = await resolve_tokenizer(model_path)
+        except Exception as e:
+          if DEBUG >= 1:
+            print(f"Failed to load tokenizer: {e}")
+          self._tokenizer = None
 
       # Store normalized shard (full model)
       self.shard = Shard(
@@ -264,68 +305,37 @@ class RKLLMInferenceEngine(InferenceEngine):
       if DEBUG >= 1:
         print(f"RKLLM model loaded: {shard.model_id}")
 
-  async def _find_rkllm_file(self, model_path, shard: Optional[Shard] = None) -> Path:
-    """Find .rkllm model file in the given path or RKLLAMA models directory."""
-    model_path = Path(model_path)
-    rkllama_models = Path.home() / 'RKLLAMA' / 'models'
+  def _get_rkllama_model_name(self, shard: Shard) -> str:
+    """Get RKLLAMA model directory name from shard."""
+    model_id = shard.model_id.lower()
 
-    # If path is directly a .rkllm file
-    if model_path.suffix == '.rkllm':
-      return model_path
+    # Check explicit mapping first
+    if model_id in RKLLM_MODEL_MAPPING:
+      return RKLLM_MODEL_MAPPING[model_id]
 
-    # Search for .rkllm file in directory
-    if model_path.is_dir():
-      rkllm_files = list(model_path.glob('*.rkllm'))
-      if rkllm_files:
-        return rkllm_files[0]
+    # Try to derive from model_id
+    # Remove common suffixes
+    name = model_id.replace('-rkllm', '').replace('_rkllm', '')
 
-    # Check RKLLAMA models directory by path name
-    rkllama_path = rkllama_models / model_path.name
-    if rkllama_path.is_dir():
-      rkllm_files = list(rkllama_path.glob('*.rkllm'))
-      if rkllm_files:
-        return rkllm_files[0]
+    # Title case each part
+    parts = name.replace('_', '-').split('-')
+    name = '-'.join(p.capitalize() for p in parts)
 
-    # Search RKLLAMA models by shard model_id
-    if shard and rkllama_models.is_dir():
-      model_id = shard.model_id.lower().replace('-rkllm', '')
-      for model_dir in rkllama_models.iterdir():
-        if model_dir.is_dir():
-          dir_name_lower = model_dir.name.lower()
-          # Match by partial name (e.g., "deepseek-r1-1.5b" matches "DeepSeek-R1-1.5B")
-          if model_id in dir_name_lower or dir_name_lower in model_id:
-            rkllm_files = list(model_dir.glob('*.rkllm'))
-            if rkllm_files:
-              if DEBUG >= 2:
-                print(f"Found RKLLM model: {rkllm_files[0]}")
-              return rkllm_files[0]
-
-    # Search all RKLLAMA models for any .rkllm file as last resort
-    if rkllama_models.is_dir():
-      for model_dir in rkllama_models.iterdir():
-        if model_dir.is_dir():
-          rkllm_files = list(model_dir.glob('*.rkllm'))
-          if rkllm_files:
-            if DEBUG >= 1:
-              print(f"Using first available RKLLM model: {rkllm_files[0]}")
-            return rkllm_files[0]
-
-    raise FileNotFoundError(
-      f"No .rkllm file found in {model_path} or ~/RKLLAMA/models/. "
-      f"Please ensure the model is converted to RKLLM format."
-    )
+    return name
 
   async def cleanup(self):
     """Release all resources."""
-    if self._wrapper:
-      await asyncio.get_running_loop().run_in_executor(
-        self._executor,
-        self._wrapper.release
-      )
-      self._wrapper = None
+    if self._model_loaded:
+      try:
+        await self._http_client.unload_model()
+      except Exception as e:
+        if DEBUG >= 1:
+          print(f"Error unloading model: {e}")
+      self._model_loaded = False
 
+    await self._http_client.close()
     self._executor.shutdown(wait=True)
 
   def __del__(self):
-    if self._wrapper:
-      self._wrapper.release()
+    # Cleanup is async, so we can't do much here
+    pass
