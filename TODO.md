@@ -59,11 +59,12 @@
 ## DevOps
 
 ### Service Management
-- [ ] **Create systemd service files**
+- [x] **Create systemd service files**
   - `rkllama.service` for RKLLAMA server
   - `exo-rkllm.service` for Exo
   - Auto-restart on failure
   - Proper logging configuration
+  - See `systemd/README.md` for usage
 
 - [ ] **Add health monitoring**
   - Prometheus metrics endpoint
