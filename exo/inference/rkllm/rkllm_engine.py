@@ -406,25 +406,38 @@ class RKLLMInferenceEngine(InferenceEngine):
     task = asyncio.create_task(stream_tokens())
     self._stream_tasks[request_id] = task
 
-    # Wait a bit for the first token
-    await asyncio.sleep(0.1)
+    # Wait for the first token with timeout
+    max_wait = 60  # 60 second timeout for first token
+    wait_interval = 0.1
+    total_wait = 0
 
-    # Return first token if available
-    if self.session.get(stream_queue_key):
-      token_text = self.session[stream_queue_key].pop(0)
-      if self._tokenizer:
-        tokens = await asyncio.get_running_loop().run_in_executor(
-          self._executor,
-          self._tokenizer.encode,
-          token_text
-        )
-        if tokens:
-          if DEBUG >= 2:
-            print(f"RKLLM first stream token: {repr(token_text)} -> {tokens[0]}")
-          output = np.array([[tokens[0]]], dtype=np.int32)
-          return output, inference_state
+    while total_wait < max_wait:
+      await asyncio.sleep(wait_interval)
+      total_wait += wait_interval
 
-    # No token yet, return placeholder
+      # Check if we got a token
+      if self.session.get(stream_queue_key):
+        token_text = self.session[stream_queue_key].pop(0)
+        if self._tokenizer:
+          tokens = await asyncio.get_running_loop().run_in_executor(
+            self._executor,
+            self._tokenizer.encode,
+            token_text
+          )
+          if tokens:
+            if DEBUG >= 2:
+              print(f"RKLLM first stream token: {repr(token_text)} -> {tokens[0]}")
+            output = np.array([[tokens[0]]], dtype=np.int32)
+            return output, inference_state
+
+      # Check if streaming is done (error or completion)
+      if self.session.get(stream_done_key, False):
+        if DEBUG >= 1:
+          print(f"RKLLM stream finished before producing tokens")
+        break
+
+    # Stream finished or timed out without tokens
+    self._cleanup_stream_session(request_id)
     output = np.array([[eos_token_id]], dtype=np.int32)
     return output, inference_state
 

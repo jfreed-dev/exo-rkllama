@@ -297,10 +297,15 @@ class RKLLMHTTPClient:
         f"{self.config.base_url}/generate",
         json=payload
       ) as resp:
+        if DEBUG >= 2:
+          print(f"RKLLM stream response status: {resp.status}")
+
         if resp.status == 200:
           async for line in resp.content:
             if line:
               line_str = line.decode('utf-8').strip()
+              if DEBUG >= 3:
+                print(f"RKLLM stream raw line: {repr(line_str[:200])}")
               if not line_str:
                 continue
 
