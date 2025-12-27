@@ -2,6 +2,99 @@
 
 RKLLM inference engine for Rockchip RK3588/RK3576 NPU devices. This engine integrates with the [rkllama](https://github.com/jfreed-dev/rkllama) server to provide LLM inference on Rockchip NPUs.
 
+## Performance Benchmarks
+
+### Hardware Configuration
+- **Device**: Rockchip RK3588 (6 TOPS INT8 NPU)
+- **Runtime**: RKLLM SDK 1.1.4
+- **Quantization**: W8A8 (8-bit weights, 8-bit activations)
+
+### Benchmark Results
+
+#### Qwen2.5-1.5B-Instruct (w8a8)
+
+| Test            | Tokens/sec | Total Tokens | Completion Tokens | Response Time |
+|-----------------|------------|--------------|-------------------|---------------|
+| Math            | 7.23       | 56           | 23                | ~3s           |
+| Explanation     | 7.81       | 57           | 29                | ~4s           |
+| Code Generation | 8.21       | 189          | 156               | ~19s          |
+| Reasoning       | 8.09       | 253          | 222               | ~27s          |
+| Creative        | 7.48       | 54           | 26                | ~3s           |
+| **AVERAGE**     | **7.76**   | **122**      | **91**            | **~11s**      |
+
+#### DeepSeek-R1-1.5B (chain-of-thought)
+
+| Test            | Tokens/sec | Total Tokens | Completion Tokens | Response Time |
+|-----------------|------------|--------------|-------------------|---------------|
+| Math            | 7.95       | 534          | 501               | ~63s          |
+| Explanation     | 7.75       | 1027         | 999               | ~129s         |
+| Code Generation | 7.92       | 674          | 641               | ~81s          |
+| Reasoning       | 7.86       | 659          | 628               | ~80s          |
+| Creative        | 8.07       | 240          | 212               | ~26s          |
+| **AVERAGE**     | **7.91**   | **627**      | **596**           | **~76s**      |
+
+### Model Comparison
+
+| Metric                    | Qwen2.5-1.5B-Instruct | DeepSeek-R1-1.5B     |
+|---------------------------|----------------------|----------------------|
+| **Average Speed**         | 7.76 tok/s           | 7.91 tok/s           |
+| **Avg Completion Tokens** | 91                   | 596                  |
+| **Token Efficiency**      | 6.5x fewer tokens    | Verbose (CoT)        |
+| **Response Style**        | Concise, direct      | Chain-of-thought     |
+| **Avg Response Time**     | ~11 seconds          | ~76 seconds          |
+| **Model Size**            | 1.9 GB (w8a8)        | ~1.8 GB              |
+| **Best For**              | APIs, chatbots       | Reasoning, education |
+
+### Key Findings
+
+1. **Inference Speed**: Both models achieve ~7.8-8.0 tokens/second on the RK3588 NPU, which is consistent regardless of model architecture.
+
+2. **Token Efficiency**: Qwen generates **6.5x fewer tokens** for equivalent prompts because DeepSeek includes `<think>` reasoning blocks in responses.
+
+3. **Response Latency**: Due to token count differences:
+   - Qwen: 3-32 seconds per response
+   - DeepSeek: 26-129 seconds per response
+
+4. **Use Case Recommendations**:
+   - **Qwen2.5-1.5B-Instruct**: Production APIs, chatbots, quick Q&A, mobile applications
+   - **DeepSeek-R1-1.5B**: Educational tools, step-by-step explanations, complex reasoning tasks
+
+### Sample Responses
+
+**Prompt: "What is 145 + 278?"**
+
+*Qwen (23 tokens):*
+```
+Solution: $$ 145 + 278 = \boxed{423} $$
+```
+
+*DeepSeek (501 tokens):*
+```
+Calculo de la suma de 145 y 278.
+
+Primero, sumaré los dígitos unitarios: 5 + 8 = 13...
+[detailed step-by-step explanation]
+...
+Por lo tanto, la suma es 423.
+</think>
+
+**Solución:**
+$$ 145 + 278 = \boxed{423} $$
+```
+
+### Benchmark Methodology
+
+Tests performed with the following prompts:
+1. **Math**: "What is 145 + 278?"
+2. **Explanation**: "What is Python in one sentence?"
+3. **Code Generation**: "Write a Python function to check if a number is prime."
+4. **Reasoning**: "Is 17 a prime number? Explain."
+5. **Creative**: "Write a haiku about AI."
+
+Each test was run with `stream: false` to measure complete response generation time.
+
+---
+
 ## Architecture
 
 ### System Overview
@@ -125,7 +218,7 @@ RKLLM generates complete responses in one shot, but exo expects token-by-token g
 ### Prerequisites
 
 1. **Rockchip RK3588/RK3576 device** with NPU support
-2. **RKLLM Runtime** installed (`librkllmrt.so`)
+2. **RKLLM Runtime** installed (`librkllmrt.so` v1.1.4)
 3. **RKLLAMA server** running on the device
 4. **Converted `.rkllm` model** in `~/RKLLAMA/models/`
 
@@ -137,9 +230,12 @@ RKLLM generates complete responses in one shot, but exo expects token-by-token g
 │   ├── librkllmrt.so          # RKLLM runtime library
 │   └── fix_freq_rk3588.sh     # NPU frequency optimization
 └── models/
-    └── DeepSeek-R1-1.5B/
-        ├── DeepSeek-R1-1.5B.rkllm   # Converted model
-        └── Modelfile                 # Model configuration
+    ├── DeepSeek-R1-1.5B/
+    │   ├── DeepSeek-R1-1.5B.rkllm   # Converted model
+    │   └── Modelfile                 # Model configuration
+    └── Qwen2.5-1.5B-Instruct/
+        ├── Qwen2.5-1.5B-Instruct.rkllm
+        └── Modelfile
 ```
 
 ### Starting RKLLAMA Server
@@ -176,12 +272,38 @@ python -m exo.main --inference-engine rkllm --disable-tui
 
 The engine maps exo model IDs to RKLLAMA model directories:
 
-| Exo Model ID | RKLLAMA Directory | Tokenizer |
-|--------------|-------------------|-----------|
-| `deepseek-r1-1.5b-rkllm` | `DeepSeek-R1-1.5B` | `Qwen/Qwen2.5-1.5B-Instruct` |
-| `qwen2.5-1.5b-rkllm` | `Qwen2.5-1.5B` | `Qwen/Qwen2.5-1.5B-Instruct` |
-| `qwen2.5-3b-rkllm` | `Qwen2.5-3B` | `Qwen/Qwen2.5-3B-Instruct` |
-| `phi-3-mini-rkllm` | `Phi-3-mini` | `microsoft/Phi-3-mini-4k-instruct` |
+| Exo Model ID | RKLLAMA Directory | Tokenizer | Status |
+|--------------|-------------------|-----------|--------|
+| `deepseek-r1-1.5b-rkllm` | `DeepSeek-R1-1.5B` | `Qwen/Qwen2.5-1.5B-Instruct` | Tested |
+| `qwen2.5-1.5b-instruct-rkllm` | `Qwen2.5-1.5B-Instruct` | `Qwen/Qwen2.5-1.5B-Instruct` | Tested |
+| `qwen2.5-1.5b-rkllm` | `Qwen2.5-1.5B` | `Qwen/Qwen2.5-1.5B-Instruct` | - |
+| `qwen2.5-3b-rkllm` | `Qwen2.5-3B` | `Qwen/Qwen2.5-3B-Instruct` | - |
+| `phi-3-mini-rkllm` | `Phi-3-mini` | `microsoft/Phi-3-mini-4k-instruct` | - |
+
+## Supported Models
+
+### Pre-converted Models (Recommended)
+
+These models are pre-converted and tested with RKLLM 1.1.4:
+
+| Model | HuggingFace Source | Size | Notes |
+|-------|-------------------|------|-------|
+| Qwen2.5-1.5B-Instruct | [c01zaut/Qwen2.5-1.5B-Instruct-RK3588-1.1.4](https://huggingface.co/c01zaut/Qwen2.5-1.5B-Instruct-RK3588-1.1.4) | 1.9 GB | w8a8 quantized, multiple variants |
+| DeepSeek-R1-1.5B | Pre-installed with rkllama | ~1.8 GB | Chain-of-thought reasoning |
+
+### Converting Your Own Models
+
+Use RKLLM-Toolkit on x86_64:
+
+```bash
+# Clone toolkit
+git clone --branch release-v1.1.4 https://github.com/airockchip/rknn-llm.git
+
+# Install
+pip install rknn-llm/rkllm-toolkit/packages/rkllm_toolkit-1.1.4-cp310-cp310-linux_x86_64.whl
+
+# Convert (see examples in rkllm-toolkit/examples/)
+```
 
 ## Limitations
 
@@ -293,10 +415,15 @@ class RKLLMHTTPClient:
    - Check model directory name matches mapping
 
 3. **"Model loaded but gibberish output"**
-   - Usually indicates tokenizer mismatch
-   - Verify HuggingFace tokenizer repo is correct
+   - Usually indicates runtime version mismatch
+   - Ensure model was converted with matching RKLLM toolkit version
+   - Check: `strings librkllmrt.so | grep "version:"`
 
-4. **Segmentation fault with direct ctypes**
+4. **"invalid rknn llm model magic"**
+   - Model was converted with different RKLLM toolkit version
+   - Download pre-converted model for your runtime version
+
+5. **Segmentation fault with direct ctypes**
    - Use HTTP mode (default) instead of direct ctypes
    - The rkllama server handles NPU frequency optimization
 
