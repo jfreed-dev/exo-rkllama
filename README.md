@@ -118,8 +118,7 @@ Models require pre-converted `.rkllm` files in `~/RKLLAMA/models/`. See [rkllm-t
 | Token caching | ✅ | Handles RKLLM batch-style generation |
 | Model loading/unloading | ✅ | Hot-swap models via HTTP API |
 | HuggingFace tokenizers | ✅ | Auto-downloads tokenizers |
-| Qwen2.5-1.5B-Instruct | ✅ | Tested, ~7.8 tok/s |
-| DeepSeek-R1-1.5B | ✅ | Tested, ~7.9 tok/s |
+| Qwen2.5-1.5B-Instruct | ✅ | Tested, ~7.8 tok/s, recommended |
 | Systemd services | ✅ | Auto-start on boot |
 | Web UI (tinychat) | ✅ | Works at localhost:52415 |
 
@@ -127,6 +126,7 @@ Models require pre-converted `.rkllm` files in `~/RKLLAMA/models/`. See [rkllm-t
 
 | Feature | Status | Notes |
 |---------|--------|-------|
+| DeepSeek-R1-1.5B | ⚠️ | Long chain-of-thought causes timeouts, needs streaming |
 | Streaming responses | ⚠️ | Code exists, not fully integrated |
 | Layer sharding | ❌ | By design - RKLLM loads full models only |
 | Multi-node distribution | ❌ | By design - use load balancer instead |

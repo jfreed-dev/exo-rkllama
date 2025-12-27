@@ -24,6 +24,26 @@
 
   </details>
 
+## Known Issues
+
+### DeepSeek-R1-1.5B Model Issues ⚠️
+- **Status:** Partially working - requires investigation
+- **Tested:** 2025-12-27
+
+| Issue | Cause | Fix |
+|-------|-------|-----|
+| `[PAD151935]` token spam | Wrong tokenizer in Modelfile | Updated to `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B` |
+| Long/stuck generation | DeepSeek-R1 generates extensive chain-of-thought | Model behavior, not a bug |
+| Request timeouts | 2048 tokens of `<think>` reasoning before answer | Need higher limits |
+
+**Root Cause:** DeepSeek-R1 models are designed for reasoning tasks and generate very long internal thought chains (`<think>...</think>`) before producing the final answer. Even simple prompts like "What is 2+2?" can generate 2000+ tokens of reasoning.
+
+**Recommendations:**
+- [ ] Increase `max_new_tokens` for DeepSeek models (4096+)
+- [ ] Implement streaming to show reasoning in real-time
+- [ ] Consider post-processing to extract final answer from `<think>` blocks
+- [ ] Add request timeout configuration per model
+
 ## Model Expansion
 
 ### New Model Conversions
@@ -105,9 +125,14 @@
 
 ### Current Working Configuration
 - **Runtime:** RKLLM SDK 1.2.3
-- **rkllama:** e5ecd35 (jfreed-dev/rkllama v0.0.4)
-- **Models:** DeepSeek-R1-1.5B, Qwen2.5-1.5B-Instruct
+- **rkllama:** 31cc4d4 (jfreed-dev/rkllama v0.0.5)
 - **Speed:** ~7.8-8.0 tok/s on RK3588 NPU
+
+### Model Status
+| Model | Status | Notes |
+|-------|--------|-------|
+| Qwen2.5-1.5B-Instruct | ✅ Working | Recommended for general use |
+| DeepSeek-R1-1.5B | ⚠️ Issues | Long chain-of-thought, timeouts (see Known Issues) |
 
 ### Model Sources
 - Qwen2.5-1.5B-Instruct: https://huggingface.co/c01zaut/Qwen2.5-1.5B-Instruct-RK3588-1.1.4
