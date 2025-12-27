@@ -5,15 +5,32 @@
 ## High Priority
 
 ### Bug Fixes
-- [ ] **Fix rkllama upstream compatibility**
-  - New rkllama (runtime 1.2.3) causes DeepSeek output corruption (&&&&& characters)
+- [ ] **Fix rkllama upstream compatibility (RKLLM 1.2.3)**
+  - New rkllama (runtime 1.2.3) causes output corruption (`&&&&&` characters)
   - Currently using old version (d0392d7) with runtime 1.1.4
-  - Need to investigate root cause or find compatible models
 
-- [ ] **Report bug to rkllama upstream**
-  - Document reproduction steps
-  - Include model versions and runtime info
-  - Submit issue at https://github.com/jfreed-dev/rkllama
+  **Root Cause Analysis (2025-12-27):**
+
+  The issue is **ABI incompatibility** - ctypes structure definitions don't match the new `librkllmrt.so` binary. Key breaking changes:
+
+  | Structure | 1.1.4 | 1.2.3 | Impact |
+  |-----------|-------|-------|--------|
+  | `RKLLMResult` | `text, size, last_hidden_layer` | `text, token_id, last_hidden_layer, logits, perf` | Memory layout mismatch |
+  | `RKLLMExtendParam` | `base_domain_id, reserved[112]` | `+embed_flash, cpus_num, cpus_mask, n_batch, use_cross_attn` | Struct size change |
+  | `RKLLMInput` | `input_mode, input_data` | `role, enable_thinking, input_type, input_data` | New fields prepended |
+  | `RKLLMParam` | (old fields) | Added `n_keep`, `use_gpu` | Additional fields |
+
+  When Python ctypes reads the new binary's output using old struct definitions, pointers read from wrong offsets produce garbage.
+
+  **Solutions:**
+  1. **Stay on 1.1.4** (current workaround) - use matching runtime + ctypes definitions
+  2. **Update to 1.2.3** - requires updating all ctypes structures in rkllama fork
+  3. **Use upstream rkllama 0.0.4+** - already has updated structures for 1.2.x
+
+- [ ] **Report findings to rkllama upstream**
+  - Document the ABI breaking changes
+  - Suggest semantic versioning for runtime compatibility
+  - Submit issue at https://github.com/NotPunchnox/rkllama
 
 ## Model Expansion
 
