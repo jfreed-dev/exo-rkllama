@@ -78,6 +78,11 @@ class RKLLMInferenceEngine(InferenceEngine):
     if DEBUG >= 1:
       print(f"RKLLM engine initialized (HTTP mode: {self._server_config.base_url})")
 
+  @property
+  def tokenizer(self):
+    """Return the tokenizer for compatibility with exo framework."""
+    return self._tokenizer
+
   async def encode(self, shard: Shard, prompt: str) -> np.ndarray:
     """Encode prompt to tokens using model's tokenizer."""
     await self.ensure_shard(shard)
