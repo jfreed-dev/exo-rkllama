@@ -232,7 +232,7 @@ class RKLLMInferenceEngine(InferenceEngine):
         print(f"Loading RKLLM model from: {model_path}")
 
       # Find .rkllm file in the model path
-      rkllm_path = await self._find_rkllm_file(model_path)
+      rkllm_path = await self._find_rkllm_file(model_path, shard)
 
       # Release previous model if any
       if self._wrapper:
@@ -264,9 +264,10 @@ class RKLLMInferenceEngine(InferenceEngine):
       if DEBUG >= 1:
         print(f"RKLLM model loaded: {shard.model_id}")
 
-  async def _find_rkllm_file(self, model_path) -> Path:
-    """Find .rkllm model file in the given path."""
+  async def _find_rkllm_file(self, model_path, shard: Optional[Shard] = None) -> Path:
+    """Find .rkllm model file in the given path or RKLLAMA models directory."""
     model_path = Path(model_path)
+    rkllama_models = Path.home() / 'RKLLAMA' / 'models'
 
     # If path is directly a .rkllm file
     if model_path.suffix == '.rkllm':
@@ -278,15 +279,39 @@ class RKLLMInferenceEngine(InferenceEngine):
       if rkllm_files:
         return rkllm_files[0]
 
-    # Check RKLLAMA models directory
-    rkllama_path = Path.home() / 'RKLLAMA' / 'models' / model_path.name
+    # Check RKLLAMA models directory by path name
+    rkllama_path = rkllama_models / model_path.name
     if rkllama_path.is_dir():
       rkllm_files = list(rkllama_path.glob('*.rkllm'))
       if rkllm_files:
         return rkllm_files[0]
 
+    # Search RKLLAMA models by shard model_id
+    if shard and rkllama_models.is_dir():
+      model_id = shard.model_id.lower().replace('-rkllm', '')
+      for model_dir in rkllama_models.iterdir():
+        if model_dir.is_dir():
+          dir_name_lower = model_dir.name.lower()
+          # Match by partial name (e.g., "deepseek-r1-1.5b" matches "DeepSeek-R1-1.5B")
+          if model_id in dir_name_lower or dir_name_lower in model_id:
+            rkllm_files = list(model_dir.glob('*.rkllm'))
+            if rkllm_files:
+              if DEBUG >= 2:
+                print(f"Found RKLLM model: {rkllm_files[0]}")
+              return rkllm_files[0]
+
+    # Search all RKLLAMA models for any .rkllm file as last resort
+    if rkllama_models.is_dir():
+      for model_dir in rkllama_models.iterdir():
+        if model_dir.is_dir():
+          rkllm_files = list(model_dir.glob('*.rkllm'))
+          if rkllm_files:
+            if DEBUG >= 1:
+              print(f"Using first available RKLLM model: {rkllm_files[0]}")
+            return rkllm_files[0]
+
     raise FileNotFoundError(
-      f"No .rkllm file found in {model_path}. "
+      f"No .rkllm file found in {model_path} or ~/RKLLAMA/models/. "
       f"Please ensure the model is converted to RKLLM format."
     )
 
