@@ -38,11 +38,18 @@ RKLLM_MODEL_MAPPING = {
 
 # HuggingFace tokenizer repos for RKLLM models
 RKLLM_TOKENIZER_REPOS = {
-  "deepseek-r1-1.5b-rkllm": "Qwen/Qwen2.5-1.5B-Instruct",
+  "deepseek-r1-1.5b-rkllm": "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
   "qwen2.5-1.5b-rkllm": "Qwen/Qwen2.5-1.5B-Instruct",
   "qwen2.5-1.5b-instruct-rkllm": "Qwen/Qwen2.5-1.5B-Instruct",
   "qwen2.5-3b-rkllm": "Qwen/Qwen2.5-3B-Instruct",
   "phi-3-mini-rkllm": "microsoft/Phi-3-mini-4k-instruct",
+}
+
+# Models that benefit from streaming (long chain-of-thought)
+STREAMING_MODELS = {
+  "deepseek-r1-1.5b-rkllm",
+  "deepseek-r1-7b-rkllm",
+  "deepseek-r1-14b-rkllm",
 }
 
 
@@ -76,6 +83,8 @@ class RKLLMInferenceEngine(InferenceEngine):
     )
     self._http_client = RKLLMHTTPClient(self._server_config)
     self._model_loaded = False
+    self._use_streaming = False  # Will be set based on model
+    self._stream_tasks = {}  # Active streaming tasks per request
 
     if DEBUG >= 1:
       print(f"RKLLM engine initialized (HTTP mode: {self._server_config.base_url})")
@@ -173,6 +182,8 @@ class RKLLMInferenceEngine(InferenceEngine):
     2. On subsequent calls: return next token from cache
     3. When cache exhausted: return EOS token
 
+    For streaming models (DeepSeek), tokens are streamed as they're generated.
+
     Args:
       request_id: Unique identifier for this request
       shard: Model shard specification
@@ -196,7 +207,19 @@ class RKLLMInferenceEngine(InferenceEngine):
     # Check if we have cached response tokens for this request
     cache_key = f"response_tokens_{request_id}"
     index_key = f"token_index_{request_id}"
+    stream_key = f"stream_task_{request_id}"
+    stream_queue_key = f"stream_queue_{request_id}"
+    stream_done_key = f"stream_done_{request_id}"
 
+    # Handle streaming mode for DeepSeek models
+    if self._use_streaming:
+      return await self._infer_tensor_streaming(
+        request_id, shard, input_data, inference_state,
+        eos_token_id, cache_key, index_key, stream_key,
+        stream_queue_key, stream_done_key
+      )
+
+    # Non-streaming mode (original behavior)
     if cache_key in self.session:
       # Continuation: return next token from cache
       cached_tokens = self.session[cache_key]
@@ -272,6 +295,156 @@ class RKLLMInferenceEngine(InferenceEngine):
     # No tokens generated, return EOS
     output = np.array([[eos_token_id]], dtype=np.int32)
     return output, inference_state
+
+  async def _infer_tensor_streaming(
+    self,
+    request_id: str,
+    shard: Shard,
+    input_data: np.ndarray,
+    inference_state: dict,
+    eos_token_id: int,
+    cache_key: str,
+    index_key: str,
+    stream_key: str,
+    stream_queue_key: str,
+    stream_done_key: str
+  ) -> Tuple[np.ndarray, Optional[dict]]:
+    """
+    Streaming inference for models like DeepSeek that generate long responses.
+
+    Tokens are streamed from the server and returned as they become available.
+    """
+    # Check if we have tokens waiting in the queue
+    if stream_queue_key in self.session:
+      queue = self.session[stream_queue_key]
+      is_done = self.session.get(stream_done_key, False)
+
+      # Try to get a token from the queue
+      if queue:
+        token_text = queue.pop(0)
+
+        # Encode the token text
+        if self._tokenizer:
+          tokens = await asyncio.get_running_loop().run_in_executor(
+            self._executor,
+            self._tokenizer.encode,
+            token_text
+          )
+          if tokens:
+            if DEBUG >= 2:
+              print(f"RKLLM stream token: {repr(token_text)} -> {tokens[0]}")
+            output = np.array([[tokens[0]]], dtype=np.int32)
+            return output, inference_state
+
+      # Queue is empty
+      if is_done:
+        # Stream finished, cleanup and return EOS
+        if DEBUG >= 2:
+          print(f"RKLLM stream complete, returning EOS")
+        self._cleanup_stream_session(request_id)
+        output = np.array([[eos_token_id]], dtype=np.int32)
+        return output, inference_state
+      else:
+        # Wait for more tokens
+        await asyncio.sleep(0.01)
+        # Return a placeholder token to keep the loop going
+        # This will be called again to get the actual token
+        if queue:
+          token_text = queue.pop(0)
+          if self._tokenizer:
+            tokens = await asyncio.get_running_loop().run_in_executor(
+              self._executor,
+              self._tokenizer.encode,
+              token_text
+            )
+            if tokens:
+              output = np.array([[tokens[0]]], dtype=np.int32)
+              return output, inference_state
+
+        # Still waiting, return a space token to keep things moving
+        output = np.array([[eos_token_id]], dtype=np.int32)
+        return output, inference_state
+
+    # First call: start streaming
+    if DEBUG >= 1:
+      print(f"RKLLM starting streaming inference for request {request_id}")
+
+    # Decode input tokens to text
+    if input_data.dtype in [np.int32, np.int64]:
+      if self._tokenizer:
+        prompt = self._tokenizer.decode(input_data.flatten().tolist())
+      else:
+        prompt = bytes(input_data.flatten().tolist()).decode('utf-8', errors='replace')
+    else:
+      raise ValueError("RKLLM HTTP mode only supports token input")
+
+    if DEBUG >= 2:
+      print(f"RKLLM stream prompt: {prompt[:100]}...")
+
+    # Initialize the token queue
+    self.session[stream_queue_key] = []
+    self.session[stream_done_key] = False
+
+    # Start the streaming task
+    async def stream_tokens():
+      try:
+        async for token_text, is_finished in self._http_client.generate_from_prompt_stream(prompt):
+          if stream_queue_key in self.session:
+            self.session[stream_queue_key].append(token_text)
+            if DEBUG >= 3:
+              print(f"RKLLM queued token: {repr(token_text)}")
+          if is_finished:
+            break
+      except Exception as e:
+        if DEBUG >= 1:
+          print(f"RKLLM stream error: {e}")
+      finally:
+        if stream_done_key in self.session:
+          self.session[stream_done_key] = True
+
+    # Start the streaming task in the background
+    task = asyncio.create_task(stream_tokens())
+    self._stream_tasks[request_id] = task
+
+    # Wait a bit for the first token
+    await asyncio.sleep(0.1)
+
+    # Return first token if available
+    if self.session.get(stream_queue_key):
+      token_text = self.session[stream_queue_key].pop(0)
+      if self._tokenizer:
+        tokens = await asyncio.get_running_loop().run_in_executor(
+          self._executor,
+          self._tokenizer.encode,
+          token_text
+        )
+        if tokens:
+          if DEBUG >= 2:
+            print(f"RKLLM first stream token: {repr(token_text)} -> {tokens[0]}")
+          output = np.array([[tokens[0]]], dtype=np.int32)
+          return output, inference_state
+
+    # No token yet, return placeholder
+    output = np.array([[eos_token_id]], dtype=np.int32)
+    return output, inference_state
+
+  def _cleanup_stream_session(self, request_id: str):
+    """Clean up streaming session state."""
+    keys_to_remove = [
+      f"stream_queue_{request_id}",
+      f"stream_done_{request_id}",
+      f"response_tokens_{request_id}",
+      f"token_index_{request_id}",
+    ]
+    for key in keys_to_remove:
+      if key in self.session:
+        del self.session[key]
+
+    if request_id in self._stream_tasks:
+      task = self._stream_tasks[request_id]
+      if not task.done():
+        task.cancel()
+      del self._stream_tasks[request_id]
 
   async def load_checkpoint(self, shard: Shard, path: str):
     """Load model from checkpoint path via HTTP API."""
@@ -365,6 +538,11 @@ class RKLLMInferenceEngine(InferenceEngine):
       )
 
       self.session = {}
+
+      # Enable streaming for models that benefit from it
+      self._use_streaming = shard.model_id.lower() in STREAMING_MODELS
+      if self._use_streaming and DEBUG >= 1:
+        print(f"RKLLM streaming enabled for model: {shard.model_id}")
 
       if DEBUG >= 1:
         print(f"RKLLM model loaded: {shard.model_id}")

@@ -7,7 +7,8 @@ which exposes the RKLLM runtime via a Flask API.
 
 import aiohttp
 import asyncio
-from typing import Optional, List, Dict, Any
+import json
+from typing import Optional, List, Dict, Any, AsyncGenerator, Tuple
 from dataclasses import dataclass
 
 from exo.helpers import DEBUG
@@ -266,3 +267,123 @@ class RKLLMHTTPClient:
       messages = [{"role": "user", "content": prompt}]
 
     return await self.generate(messages, stream=False)
+
+  async def generate_stream(
+    self,
+    messages: List[Dict[str, str]],
+    callback: Optional[callable] = None
+  ) -> AsyncGenerator[Tuple[str, bool], None]:
+    """
+    Stream tokens from the rkllama server.
+
+    Args:
+      messages: List of message dicts with 'role' and 'content' keys
+      callback: Optional callback function called for each token
+
+    Yields:
+      Tuple of (token_text, is_finished) for each token
+    """
+    try:
+      session = await self._get_session()
+      payload = {
+        "messages": messages,
+        "stream": True
+      }
+
+      if DEBUG >= 2:
+        print(f"RKLLM streaming request: {messages}")
+
+      async with session.post(
+        f"{self.config.base_url}/generate",
+        json=payload
+      ) as resp:
+        if resp.status == 200:
+          async for line in resp.content:
+            if line:
+              line_str = line.decode('utf-8').strip()
+              if not line_str:
+                continue
+
+              # Handle multiple JSON objects in one line (separated by \n\n)
+              for json_str in line_str.split('\n\n'):
+                json_str = json_str.strip()
+                if not json_str:
+                  continue
+
+                try:
+                  data = json.loads(json_str)
+                  if data.get("choices"):
+                    choice = data["choices"][0]
+                    content = choice.get("content", "")
+                    finish_reason = choice.get("finish_reason")
+                    is_finished = finish_reason == "stop"
+
+                    if content:
+                      if DEBUG >= 3:
+                        print(f"RKLLM stream token: {repr(content)}")
+                      if callback:
+                        callback(content, is_finished)
+                      yield content, is_finished
+
+                    if is_finished:
+                      return
+
+                except json.JSONDecodeError as e:
+                  if DEBUG >= 2:
+                    print(f"RKLLM stream JSON decode error: {e}, line: {json_str[:100]}")
+                  continue
+        else:
+          error = await resp.text()
+          if DEBUG >= 1:
+            print(f"RKLLM stream failed: {error}")
+
+    except asyncio.TimeoutError:
+      if DEBUG >= 1:
+        print("RKLLM stream timed out")
+    except Exception as e:
+      if DEBUG >= 1:
+        print(f"RKLLM stream failed: {e}")
+
+  async def generate_from_prompt_stream(
+    self,
+    prompt: str,
+    callback: Optional[callable] = None
+  ) -> AsyncGenerator[Tuple[str, bool], None]:
+    """
+    Stream tokens from a prompt string.
+
+    Handles pre-templated prompts by extracting user content.
+
+    Args:
+      prompt: The user prompt text (may be pre-templated)
+      callback: Optional callback for each token
+
+    Yields:
+      Tuple of (token_text, is_finished) for each token
+    """
+    import re
+
+    # Check if prompt is already templated
+    user_markers = [
+      (r'<｜User｜>(.*?)<｜Assistant｜>', 1),
+      (r'<\|user\|>(.*?)<\|assistant\|>', 1),
+      (r'\[INST\](.*?)\[/INST\]', 1),
+      (r'<\|im_start\|>user\n(.*?)<\|im_end\|>', 1),
+    ]
+
+    extracted_content = None
+    for pattern, group in user_markers:
+      match = re.search(pattern, prompt, re.DOTALL | re.IGNORECASE)
+      if match:
+        extracted_content = match.group(group).strip()
+        break
+
+    if extracted_content:
+      if DEBUG >= 2:
+        print(f"Stream: Extracted user content: {extracted_content[:100]}...")
+      messages = [{"role": "user", "content": extracted_content}]
+    else:
+      messages = [{"role": "user", "content": prompt}]
+
+    async for token, is_finished in self.generate_stream(messages, callback):
+      yield token, is_finished
