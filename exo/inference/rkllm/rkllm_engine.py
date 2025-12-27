@@ -31,6 +31,7 @@ from .rkllm_http_client import RKLLMHTTPClient, RKLLMServerConfig
 RKLLM_MODEL_MAPPING = {
   "deepseek-r1-1.5b-rkllm": "DeepSeek-R1-1.5B",
   "qwen2.5-1.5b-rkllm": "Qwen2.5-1.5B",
+  "qwen2.5-1.5b-instruct-rkllm": "Qwen2.5-1.5B-Instruct",
   "qwen2.5-3b-rkllm": "Qwen2.5-3B",
   "phi-3-mini-rkllm": "Phi-3-mini",
 }
@@ -39,6 +40,7 @@ RKLLM_MODEL_MAPPING = {
 RKLLM_TOKENIZER_REPOS = {
   "deepseek-r1-1.5b-rkllm": "Qwen/Qwen2.5-1.5B-Instruct",
   "qwen2.5-1.5b-rkllm": "Qwen/Qwen2.5-1.5B-Instruct",
+  "qwen2.5-1.5b-instruct-rkllm": "Qwen/Qwen2.5-1.5B-Instruct",
   "qwen2.5-3b-rkllm": "Qwen/Qwen2.5-3B-Instruct",
   "phi-3-mini-rkllm": "microsoft/Phi-3-mini-4k-instruct",
 }

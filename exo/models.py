@@ -159,6 +159,12 @@ model_cards = {
       "RKLLMInferenceEngine": "Qwen/Qwen2.5-1.5B-Instruct",
     },
   },
+  "qwen2.5-1.5b-instruct-rkllm": {
+    "layers": 28,
+    "repo": {
+      "RKLLMInferenceEngine": "Qwen/Qwen2.5-1.5B-Instruct",
+    },
+  },
   "qwen2.5-3b-rkllm": {
     "layers": 36,
     "repo": {
@@ -263,6 +269,7 @@ pretty_name = {
   "deepseek-r1-distill-qwen-32b-6bit": "DeepSeek R1 Distill Qwen 32B (6-bit)",
   # rkllm models
   "qwen2.5-1.5b-rkllm": "Qwen 2.5 1.5B (RKLLM)",
+  "qwen2.5-1.5b-instruct-rkllm": "Qwen 2.5 1.5B Instruct (RKLLM)",
   "qwen2.5-3b-rkllm": "Qwen 2.5 3B (RKLLM)",
   "qwen2.5-7b-rkllm": "Qwen 2.5 7B (RKLLM)",
   "deepseek-r1-1.5b-rkllm": "DeepSeek R1 1.5B (RKLLM)",
