@@ -5,13 +5,15 @@
 ## High Priority
 
 ### Bug Fixes
-- [ ] **Fix rkllama upstream compatibility (RKLLM 1.2.3)**
-  - New rkllama (runtime 1.2.3) causes output corruption (`&&&&&` characters)
-  - Currently using old version (d0392d7) with runtime 1.1.4
+- [x] ~~**Fix rkllama upstream compatibility (RKLLM 1.2.3)**~~ **FIXED 2025-12-27**
+  - Updated jfreed-dev/rkllama fork to support RKLLM 1.2.3
+  - All ctypes structures updated to match new ABI
+  - See commit `e5ecd35` in rkllama fork
 
-  **Root Cause Analysis (2025-12-27):**
+  <details>
+  <summary>Root Cause Analysis (resolved)</summary>
 
-  The issue is **ABI incompatibility** - ctypes structure definitions don't match the new `librkllmrt.so` binary. Key breaking changes:
+  The issue was **ABI incompatibility** - ctypes structure definitions didn't match the new `librkllmrt.so` binary. Key breaking changes:
 
   | Structure | 1.1.4 | 1.2.3 | Impact |
   |-----------|-------|-------|--------|
@@ -20,17 +22,7 @@
   | `RKLLMInput` | `input_mode, input_data` | `role, enable_thinking, input_type, input_data` | New fields prepended |
   | `RKLLMParam` | (old fields) | Added `n_keep`, `use_gpu` | Additional fields |
 
-  When Python ctypes reads the new binary's output using old struct definitions, pointers read from wrong offsets produce garbage.
-
-  **Solutions:**
-  1. **Stay on 1.1.4** (current workaround) - use matching runtime + ctypes definitions
-  2. **Update to 1.2.3** - requires updating all ctypes structures in rkllama fork
-  3. **Use upstream rkllama 0.0.4+** - already has updated structures for 1.2.x
-
-- [ ] **Report findings to rkllama upstream**
-  - Document the ABI breaking changes
-  - Suggest semantic versioning for runtime compatibility
-  - Submit issue at https://github.com/NotPunchnox/rkllama
+  </details>
 
 ## Model Expansion
 
@@ -105,17 +97,18 @@
 - [x] Add Qwen2.5-1.5B-Instruct model support
 - [x] Benchmark Qwen vs DeepSeek performance
 - [x] Document benchmark results and findings
+- [x] Fix RKLLM 1.2.3 ABI compatibility in rkllama fork
 
 ---
 
 ## Quick Reference
 
 ### Current Working Configuration
-- **Runtime:** RKLLM SDK 1.1.4
-- **rkllama:** d0392d7 (old version)
+- **Runtime:** RKLLM SDK 1.2.3
+- **rkllama:** e5ecd35 (jfreed-dev/rkllama v0.0.4)
 - **Models:** DeepSeek-R1-1.5B, Qwen2.5-1.5B-Instruct
 - **Speed:** ~7.8-8.0 tok/s on RK3588 NPU
 
 ### Model Sources
 - Qwen2.5-1.5B-Instruct: https://huggingface.co/c01zaut/Qwen2.5-1.5B-Instruct-RK3588-1.1.4
-- RKLLM Toolkit: https://github.com/airockchip/rknn-llm/releases/tag/release-v1.1.4
+- RKLLM Toolkit: https://github.com/airockchip/rknn-llm/releases/tag/release-v1.2.3
