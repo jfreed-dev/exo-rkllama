@@ -139,6 +139,14 @@ CHIP_FLOPS = {
   "AMD Radeon RX 7600": DeviceFlops(fp32=21.5*TFLOPS, fp16=43.0*TFLOPS, int8=86.0*TFLOPS),
   "AMD Radeon RX 7500": DeviceFlops(fp32=16.2*TFLOPS, fp16=32.4*TFLOPS, int8=64.8*TFLOPS),
   ### Qualcomm embedded chips: TODO
+  ### Rockchip NPU chips
+  # RK3588: 6 TOPS INT8 NPU (3x NPU cores)
+  "Rockchip RK3588": DeviceFlops(fp32=0.0*TFLOPS, fp16=0.0*TFLOPS, int8=6.0*TFLOPS),
+  "RK3588": DeviceFlops(fp32=0.0*TFLOPS, fp16=0.0*TFLOPS, int8=6.0*TFLOPS),
+  "RK3588S": DeviceFlops(fp32=0.0*TFLOPS, fp16=0.0*TFLOPS, int8=6.0*TFLOPS),
+  # RK3576: 6 TOPS INT8 NPU
+  "Rockchip RK3576": DeviceFlops(fp32=0.0*TFLOPS, fp16=0.0*TFLOPS, int8=6.0*TFLOPS),
+  "RK3576": DeviceFlops(fp32=0.0*TFLOPS, fp16=0.0*TFLOPS, int8=6.0*TFLOPS),
 }
 CHIP_FLOPS.update({f"LAPTOP GPU {key}": value for key, value in CHIP_FLOPS.items()})
 CHIP_FLOPS.update({f"Laptop GPU {key}": value for key, value in CHIP_FLOPS.items()})
@@ -173,8 +181,54 @@ async def mac_device_capabilities() -> DeviceCapabilities:
   )
 
 
+def detect_rockchip_npu() -> tuple[str, str] | None:
+  """Detect Rockchip RK3588/RK3576 NPU devices."""
+  import os
+
+  # Check device-tree for Rockchip SoC
+  compatible_path = '/proc/device-tree/compatible'
+  if os.path.exists(compatible_path):
+    try:
+      with open(compatible_path, 'rb') as f:
+        compatible = f.read().decode('utf-8', errors='ignore').lower()
+        if 'rk3588' in compatible:
+          # Determine variant (RK3588 vs RK3588S)
+          if 'rk3588s' in compatible:
+            return ("Rockchip RK3588S Board", "RK3588S")
+          return ("Rockchip RK3588 Board", "RK3588")
+        elif 'rk3576' in compatible:
+          return ("Rockchip RK3576 Board", "RK3576")
+    except Exception:
+      pass
+
+  # Check for RKLLM library as fallback indicator
+  rkllm_lib_paths = [
+    os.path.expanduser('~/RKLLAMA/lib/librkllmrt.so'),
+    '/usr/lib/librkllmrt.so',
+    '/usr/local/lib/librkllmrt.so',
+  ]
+  for path in rkllm_lib_paths:
+    if os.path.exists(path):
+      return ("Rockchip NPU Board", "RK3588")
+
+  return None
+
+
 async def linux_device_capabilities() -> DeviceCapabilities:
   import psutil
+
+  # Check for Rockchip NPU first
+  rockchip = detect_rockchip_npu()
+  if rockchip:
+    model, chip = rockchip
+    if DEBUG >= 2: print(f"Detected Rockchip NPU: {model} ({chip})")
+    return DeviceCapabilities(
+      model=model,
+      chip=chip,
+      memory=psutil.virtual_memory().total // 2**20,
+      flops=CHIP_FLOPS.get(chip, DeviceFlops(fp32=0, fp16=0, int8=6.0*TFLOPS)),
+    )
+
   from tinygrad import Device
 
   if DEBUG >= 2: print(f"tinygrad {Device.DEFAULT=}")

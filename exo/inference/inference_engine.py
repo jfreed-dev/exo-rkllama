@@ -54,6 +54,7 @@ class InferenceEngine(ABC):
 inference_engine_classes = {
   "mlx": "MLXDynamicShardInferenceEngine",
   "tinygrad": "TinygradDynamicShardInferenceEngine",
+  "rkllm": "RKLLMInferenceEngine",
   "dummy": "DummyInferenceEngine",
 }
 
@@ -71,6 +72,9 @@ def get_inference_engine(inference_engine_name: str, shard_downloader: ShardDown
     tinygrad.helpers.DEBUG.value = int(os.getenv("TINYGRAD_DEBUG", default="0"))
 
     return TinygradDynamicShardInferenceEngine(shard_downloader)
+  elif inference_engine_name == "rkllm":
+    from exo.inference.rkllm.rkllm_engine import RKLLMInferenceEngine
+    return RKLLMInferenceEngine(shard_downloader)
   elif inference_engine_name == "dummy":
     from exo.inference.dummy_inference_engine import DummyInferenceEngine
     return DummyInferenceEngine()
