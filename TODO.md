@@ -105,10 +105,11 @@
   - Proper logging configuration
   - See `systemd/README.md` for usage
 
-- [ ] **Add health monitoring**
-  - Prometheus metrics endpoint
-  - Grafana dashboard for NPU utilization
-  - Alert on service failures
+- [x] **Add health monitoring** (2025-12-27)
+  - Prometheus metrics endpoint at `/metrics`
+  - Request metrics: count, latency, tokens, errors
+  - RKLLM-specific: server health, inference timing, model load time
+  - See `exo/api/prometheus_metrics.py` for all metrics
 
 ## Documentation
 
@@ -129,6 +130,7 @@
 - [x] Document benchmark results and findings
 - [x] Fix RKLLM 1.2.3 ABI compatibility in rkllama fork
 - [x] Add streaming support to HTTP client and engine (2025-12-27)
+- [x] Add Prometheus health monitoring (2025-12-27)
 
 ---
 

@@ -1,6 +1,7 @@
 [Unit]
 Description=Exo Distributed Inference with RKLLM Engine
 Documentation=https://github.com/jfreed-dev/exo-rkllama
+# Prometheus metrics available at http://localhost:52415/metrics
 After=network.target rkllama.service
 Wants=rkllama.service
 

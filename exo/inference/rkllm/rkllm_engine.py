@@ -12,6 +12,7 @@ optimization and proper initialization.
 """
 
 import os
+import time
 import numpy as np
 import asyncio
 from typing import Optional, Tuple
@@ -23,6 +24,10 @@ from exo.inference.shard import Shard
 from exo.inference.tokenizers import resolve_tokenizer
 from exo.download.shard_download import ShardDownloader
 from exo.helpers import DEBUG
+from exo.api.prometheus_metrics import (
+  RKLLM_SERVER_UP, RKLLM_INFERENCE_SECONDS, RKLLM_MODEL_LOAD_SECONDS,
+  RKLLM_HTTP_REQUESTS, MODEL_INFO, INFERENCE_ENGINE_INFO
+)
 
 from .rkllm_http_client import RKLLMHTTPClient, RKLLMServerConfig
 
@@ -88,6 +93,13 @@ class RKLLMInferenceEngine(InferenceEngine):
 
     if DEBUG >= 1:
       print(f"RKLLM engine initialized (HTTP mode: {self._server_config.base_url})")
+
+    # Set inference engine info metric
+    INFERENCE_ENGINE_INFO.info({
+      'engine': 'RKLLMInferenceEngine',
+      'mode': 'http',
+      'server': self._server_config.base_url
+    })
 
   @property
   def tokenizer(self):
@@ -268,8 +280,11 @@ class RKLLMInferenceEngine(InferenceEngine):
     if DEBUG >= 2:
       print(f"RKLLM prompt: {prompt[:100]}...")
 
-    # Generate via HTTP API
+    # Generate via HTTP API with timing
+    infer_start = time.time()
     result_text = await self._http_client.generate_from_prompt(prompt)
+    RKLLM_INFERENCE_SECONDS.observe(time.time() - infer_start)
+    RKLLM_HTTP_REQUESTS.labels(endpoint='/generate', status='success' if result_text else 'error').inc()
 
     if DEBUG >= 2:
       print(f"RKLLM response: {result_text[:200]}...")
@@ -486,7 +501,11 @@ class RKLLMInferenceEngine(InferenceEngine):
         return
 
       # Check if server is available
-      if not await self._http_client.health_check():
+      server_available = await self._http_client.health_check()
+      RKLLM_SERVER_UP.set(1 if server_available else 0)
+      RKLLM_HTTP_REQUESTS.labels(endpoint='/health', status='success' if server_available else 'error').inc()
+
+      if not server_available:
         raise RuntimeError(
           f"RKLLM server not available at {self._server_config.base_url}. "
           f"Please start the rkllama server with: "
@@ -506,8 +525,13 @@ class RKLLMInferenceEngine(InferenceEngine):
       if DEBUG >= 1:
         print(f"Loading RKLLM model: {model_name}")
 
-      # Load model via HTTP API
+      # Load model via HTTP API with timing
+      load_start = time.time()
       success = await self._http_client.load_model(model_name)
+      load_duration = time.time() - load_start
+      RKLLM_MODEL_LOAD_SECONDS.observe(load_duration)
+      RKLLM_HTTP_REQUESTS.labels(endpoint='/load_model', status='success' if success else 'error').inc()
+
       if not success:
         # Try listing available models for debugging
         available = await self._http_client.list_models()
@@ -517,6 +541,13 @@ class RKLLMInferenceEngine(InferenceEngine):
         )
 
       self._model_loaded = True
+
+      # Update model info metric
+      MODEL_INFO.info({
+        'model_id': shard.model_id,
+        'rkllm_name': model_name,
+        'layers': str(shard.n_layers)
+      })
 
       # Load tokenizer from HuggingFace
       tokenizer_repo = RKLLM_TOKENIZER_REPOS.get(shard.model_id.lower())
