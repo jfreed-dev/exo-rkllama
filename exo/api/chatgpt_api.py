@@ -279,8 +279,8 @@ class ChatGPTAPI:
 
   async def handle_metrics(self, request):
     """Prometheus metrics endpoint."""
-    from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
-    return web.Response(body=generate_latest(), content_type=CONTENT_TYPE_LATEST)
+    from prometheus_client import generate_latest
+    return web.Response(body=generate_latest(), content_type="text/plain", charset="utf-8")
 
   async def handle_model_support(self, request):
     try:

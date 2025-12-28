@@ -234,24 +234,33 @@ async def linux_device_capabilities() -> DeviceCapabilities:
 
   if DEBUG >= 2: print(f"tinygrad {Device.DEFAULT=}")
   if Device.DEFAULT == "CUDA" or Device.DEFAULT == "NV" or Device.DEFAULT == "GPU":
-    import pynvml
+    try:
+      import pynvml
 
-    pynvml.nvmlInit()
-    handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-    gpu_raw_name = pynvml.nvmlDeviceGetName(handle).upper()
-    gpu_name = gpu_raw_name.rsplit(" ", 1)[0] if gpu_raw_name.endswith("GB") else gpu_raw_name
-    gpu_memory_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+      pynvml.nvmlInit()
+      handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+      gpu_raw_name = pynvml.nvmlDeviceGetName(handle).upper()
+      gpu_name = gpu_raw_name.rsplit(" ", 1)[0] if gpu_raw_name.endswith("GB") else gpu_raw_name
+      gpu_memory_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
 
-    if DEBUG >= 2: print(f"NVIDIA device {gpu_name=} {gpu_memory_info=}")
+      if DEBUG >= 2: print(f"NVIDIA device {gpu_name=} {gpu_memory_info=}")
 
-    pynvml.nvmlShutdown()
+      pynvml.nvmlShutdown()
 
-    return DeviceCapabilities(
-      model=f"Linux Box ({gpu_name})",
-      chip=gpu_name,
-      memory=gpu_memory_info.total // 2**20,
-      flops=CHIP_FLOPS.get(gpu_name, DeviceFlops(fp32=0, fp16=0, int8=0)),
-    )
+      return DeviceCapabilities(
+        model=f"Linux Box ({gpu_name})",
+        chip=gpu_name,
+        memory=gpu_memory_info.total // 2**20,
+        flops=CHIP_FLOPS.get(gpu_name, DeviceFlops(fp32=0, fp16=0, int8=0)),
+      )
+    except Exception as e:
+      if DEBUG >= 1: print(f"pynvml failed: {e}, using fallback")
+      return DeviceCapabilities(
+        model="Linux Box (NVIDIA GPU)",
+        chip="Unknown NVIDIA GPU",
+        memory=psutil.virtual_memory().total // 2**20,
+        flops=DeviceFlops(fp32=0, fp16=0, int8=0),
+      )
   elif Device.DEFAULT == "AMD":
     try:
       import pyamdgpuinfo
