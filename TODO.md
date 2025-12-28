@@ -121,6 +121,11 @@
   - Network configuration
   - Security considerations
   - See `docs/DEPLOYMENT.md`
+- [x] **Add architecture diagrams** (2025-12-27)
+  - Network topology diagram (Mermaid)
+  - Data flow for storage and monitoring
+  - Component interaction diagram
+  - See `docs/ARCHITECTURE.md`
 
 ## Completed
 
@@ -134,6 +139,7 @@
 - [x] Add Prometheus health monitoring (2025-12-27)
 - [x] Create deployment guide (2025-12-27)
 - [x] Add nginx load balancer config (2025-12-27)
+- [x] Add architecture diagrams (2025-12-27)
 
 ---
 

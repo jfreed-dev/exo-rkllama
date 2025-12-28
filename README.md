@@ -238,6 +238,7 @@ rkllm_server_up
 
 ## Documentation
 
+- [Architecture Guide](docs/ARCHITECTURE.md) - System diagrams, data flow, component interactions
 - [Deployment Guide](docs/DEPLOYMENT.md) - Complete setup from scratch
 - [RKLLM Engine Details](exo/inference/rkllm/README.md) - Architecture, benchmarks, troubleshooting
 - [Systemd Services](systemd/README.md) - Auto-start configuration
