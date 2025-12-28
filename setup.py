@@ -20,7 +20,6 @@ install_requires = [
   "prometheus-client==0.20.0",
   "protobuf==5.28.1",
   "psutil==6.0.0",
-  "pyamdgpuinfo==2.1.6;platform_system=='Linux'",
   "pydantic==2.9.2",
   "requests==2.32.3",
   "rich==13.7.1",
@@ -40,7 +39,7 @@ extras_require = {
   ],
   "windows": ["pywin32==308",],
   "nvidia-gpu": ["nvidia-ml-py==12.560.30",],
-  "amd-gpu": ["pyrsmi==0.2.0"],
+  "amd-gpu": ["pyamdgpuinfo==2.1.6", "pyrsmi==0.2.0"],
 }
 
 # Check if running on macOS with Apple Silicon
