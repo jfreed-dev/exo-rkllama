@@ -27,27 +27,31 @@
 ## Known Issues
 
 ### DeepSeek-R1-1.5B Model Issues ⚠️
-- **Status:** Partially working - requires investigation
-- **Tested:** 2025-12-27
+- **Status:** Understood - architectural limitation
+- **Tested:** 2025-12-28
 
-| Issue | Cause | Fix |
-|-------|-------|-----|
-| `[PAD151935]` token spam | Wrong tokenizer in Modelfile | Updated to `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B` |
-| Long/stuck generation | DeepSeek-R1 generates extensive chain-of-thought | Model behavior, not a bug |
-| Request timeouts | 2048 tokens of `<think>` reasoning before answer | Need higher limits |
+| Issue | Cause | Status |
+|-------|-------|--------|
+| `[PAD151935]` tokens | RKLLM-internal thinking tokens (ID 151935 > vocab max 151664) | ✅ Now filtered in rkllama callback |
+| Long generation | DeepSeek-R1 generates 2000+ thinking tokens before answer | ⚠️ By design |
+| Request timeouts | Default max_new_tokens=2048 exhausted by thinking | ✅ Added MAX_NEW_TOKENS to Modelfile |
 
-**Root Cause:** DeepSeek-R1 models are designed for reasoning tasks and generate very long internal thought chains (`<think>...</think>`) before producing the final answer. Even simple prompts like "What is 2+2?" can generate 2000+ tokens of reasoning.
+**Root Cause Analysis (2025-12-28):**
+- Token 151935 is an **RKLLM-internal token** added during model conversion
+- HuggingFace tokenizer vocabulary max is 151664; token 151935 = 151664 + 271
+- RKLLM runtime outputs `[PAD151935]` as fallback for undecoded tokens
+- These represent DeepSeek's internal chain-of-thought reasoning markers
+- Even "What is 2+2?" generates 2000+ thinking tokens before "4"
 
-**Recommendations:**
-- [ ] Increase `max_new_tokens` for DeepSeek models (4096+)
-- [x] ~~Implement streaming to show reasoning in real-time~~ **Implemented 2025-12-27**
-  - Added `generate_stream()` and `generate_from_prompt_stream()` to HTTP client
-  - Added `_infer_tensor_streaming()` to rkllm_engine.py
-  - DeepSeek models auto-enable streaming (STREAMING_MODELS set)
-  - **Note:** DeepSeek still outputs `[PAD151935]` tokens - these are thinking tokens not in vocabulary
-- [ ] Consider post-processing to extract final answer from `<think>` blocks
-- [ ] Add request timeout configuration per model
-- [ ] Investigate DeepSeek thinking token vocabulary (151935 = `<think>` token?)
+**Fixes Applied:**
+- [x] ~~Increase `max_new_tokens` for DeepSeek~~ Added `MAX_NEW_TOKENS=8192` to Modelfile
+- [x] ~~Implement thinking token filter~~ Updated rkllama callback to wrap `[PAD...]` in `<think>...</think>`
+- [x] ~~Add MAX_NEW_TOKENS support~~ server.py now reads from Modelfile
+
+**Remaining Limitations:**
+- DeepSeek responses take 3-5+ minutes due to extensive thinking
+- Not practical for interactive use; better for batch/reasoning tasks
+- Recommend Qwen2.5-1.5B-Instruct for general use (~8 tok/s, instant responses)
 
 ## Model Expansion
 
