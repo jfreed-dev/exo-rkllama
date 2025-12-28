@@ -173,3 +173,9 @@ cython_debug/
 .aider*
 
 exo/tinychat/images/*.png
+# AI assistant instructions
+.claude/
+ansible/.ansible/
+CLAUDE.md
+AGENTS.md
+GEMINI.md
