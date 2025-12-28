@@ -85,10 +85,10 @@
   - Qwen models continue to use token caching (faster for short responses)
 
 ### Multi-Node Support
-- [ ] **Implement multi-node load balancing**
+- [x] **Implement multi-node load balancing** (2025-12-27)
   - RKLLM can't do layer sharding
   - Use request-level parallelism instead
-  - Add nginx/HAProxy configuration example
+  - See `nginx/README.md` for configuration
 
 - [ ] **Add automatic model switching**
   - Switch models based on request type
@@ -133,6 +133,7 @@
 - [x] Add streaming support to HTTP client and engine (2025-12-27)
 - [x] Add Prometheus health monitoring (2025-12-27)
 - [x] Create deployment guide (2025-12-27)
+- [x] Add nginx load balancer config (2025-12-27)
 
 ---
 

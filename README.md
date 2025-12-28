@@ -241,6 +241,7 @@ rkllm_server_up
 - [Deployment Guide](docs/DEPLOYMENT.md) - Complete setup from scratch
 - [RKLLM Engine Details](exo/inference/rkllm/README.md) - Architecture, benchmarks, troubleshooting
 - [Systemd Services](systemd/README.md) - Auto-start configuration
+- [Nginx Load Balancer](nginx/README.md) - Multi-node request distribution
 - [Prometheus Config](prometheus.yml) - Metrics scraping configuration
 - [Grafana Dashboard](grafana/exo-dashboard.json) - Pre-built visualization
 
