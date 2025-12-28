@@ -122,6 +122,7 @@ Models require pre-converted `.rkllm` files in `~/RKLLAMA/models/`. See [rkllm-t
 | Systemd services | ✅ | Auto-start on boot |
 | Web UI (tinychat) | ✅ | Works at localhost:52415 |
 | Streaming responses | ✅ | Async generator for real-time token output |
+| Prometheus metrics | ✅ | `/metrics` endpoint for monitoring |
 
 ### Not Working / Known Issues
 
@@ -140,13 +141,13 @@ Models require pre-converted `.rkllm` files in `~/RKLLAMA/models/`. See [rkllm-t
 | DeepSeek thinking tokens | High | Decode `[PAD151935]` thinking tokens properly |
 | Convert 3B/7B models | Medium | Larger models for better quality |
 | Multi-node load balancing | Medium | HAProxy/nginx config for request parallelism |
-| Health monitoring | Low | Prometheus metrics, Grafana dashboard |
 | Deployment guide | Low | Full setup documentation |
 
 ### Recently Fixed
 
 | Feature | Date | Notes |
 |---------|------|-------|
+| Prometheus monitoring | 2025-12-27 | `/metrics` endpoint with Grafana dashboard |
 | Streaming support | 2025-12-27 | Async generator streaming in HTTP client and engine |
 | RKLLM runtime 1.2.3 | 2025-12-27 | Updated rkllama fork with correct ABI structures |
 
@@ -175,10 +176,72 @@ This fork retains all original exo inference engines:
 | `EXO_HOME` | `~/.cache/exo` | Model cache directory |
 | `DEBUG` | `0` | Debug verbosity (0-9) |
 
+## Monitoring
+
+Exo exposes Prometheus metrics at `http://localhost:52415/metrics`.
+
+### Quick Setup
+
+```bash
+# 1. Start exo (metrics are enabled by default)
+exo --inference-engine rkllm --disable-tui
+
+# 2. Verify metrics endpoint
+curl http://localhost:52415/metrics
+```
+
+### Prometheus Setup
+
+```bash
+# Use the included config
+prometheus --config.file=prometheus.yml
+
+# Access Prometheus UI at http://localhost:9090
+```
+
+### Grafana Dashboard
+
+Import the included dashboard for visualization:
+
+1. Open Grafana → Dashboards → Import
+2. Upload `grafana/exo-dashboard.json`
+3. Select your Prometheus data source
+
+### Available Metrics
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `exo_requests_total` | Counter | Total requests by model/status |
+| `exo_requests_in_progress` | Gauge | Currently active requests |
+| `exo_tokens_generated_total` | Counter | Total tokens generated |
+| `exo_request_duration_seconds` | Histogram | Request latency (p50/p95/p99) |
+| `exo_first_token_latency_seconds` | Histogram | Time to first token |
+| `rkllm_server_up` | Gauge | RKLLAMA server status (1=up) |
+| `rkllm_inference_duration_seconds` | Histogram | NPU inference timing |
+| `rkllm_model_load_duration_seconds` | Histogram | Model load time |
+
+### Example Queries
+
+```promql
+# Request rate per minute
+sum(rate(exo_requests_total[5m])) * 60
+
+# 95th percentile latency
+histogram_quantile(0.95, rate(exo_request_duration_seconds_bucket[5m]))
+
+# Token throughput
+sum(rate(exo_tokens_generated_total[1m]))
+
+# RKLLM server health
+rkllm_server_up
+```
+
 ## Documentation
 
 - [RKLLM Engine Details](exo/inference/rkllm/README.md) - Full architecture, benchmarks, troubleshooting
 - [Systemd Services](systemd/README.md) - Auto-start configuration
+- [Prometheus Config](prometheus.yml) - Metrics scraping configuration
+- [Grafana Dashboard](grafana/exo-dashboard.json) - Pre-built visualization
 
 ## Related Repositories
 
