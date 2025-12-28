@@ -141,12 +141,12 @@ Models require pre-converted `.rkllm` files in `~/RKLLAMA/models/`. See [rkllm-t
 | DeepSeek thinking tokens | High | Decode `[PAD151935]` thinking tokens properly |
 | Convert 3B/7B models | Medium | Larger models for better quality |
 | Multi-node load balancing | Medium | HAProxy/nginx config for request parallelism |
-| Deployment guide | Low | Full setup documentation |
 
 ### Recently Fixed
 
 | Feature | Date | Notes |
 |---------|------|-------|
+| Deployment guide | 2025-12-27 | Complete setup documentation |
 | Prometheus monitoring | 2025-12-27 | `/metrics` endpoint with Grafana dashboard |
 | Streaming support | 2025-12-27 | Async generator streaming in HTTP client and engine |
 | RKLLM runtime 1.2.3 | 2025-12-27 | Updated rkllama fork with correct ABI structures |
@@ -238,7 +238,8 @@ rkllm_server_up
 
 ## Documentation
 
-- [RKLLM Engine Details](exo/inference/rkllm/README.md) - Full architecture, benchmarks, troubleshooting
+- [Deployment Guide](docs/DEPLOYMENT.md) - Complete setup from scratch
+- [RKLLM Engine Details](exo/inference/rkllm/README.md) - Architecture, benchmarks, troubleshooting
 - [Systemd Services](systemd/README.md) - Auto-start configuration
 - [Prometheus Config](prometheus.yml) - Metrics scraping configuration
 - [Grafana Dashboard](grafana/exo-dashboard.json) - Pre-built visualization

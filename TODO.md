@@ -116,10 +116,11 @@
 - [x] ~~Add benchmark results to README~~
 - [x] ~~Document model comparison~~
 - [x] ~~Add troubleshooting guide~~
-- [ ] **Create deployment guide**
+- [x] **Create deployment guide** (2025-12-27)
   - Step-by-step setup instructions
   - Network configuration
   - Security considerations
+  - See `docs/DEPLOYMENT.md`
 
 ## Completed
 
@@ -131,6 +132,7 @@
 - [x] Fix RKLLM 1.2.3 ABI compatibility in rkllama fork
 - [x] Add streaming support to HTTP client and engine (2025-12-27)
 - [x] Add Prometheus health monitoring (2025-12-27)
+- [x] Create deployment guide (2025-12-27)
 
 ---
 
