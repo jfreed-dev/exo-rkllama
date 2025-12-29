@@ -1,6 +1,6 @@
 # RKLLM Integration TODO List
 
-**Last Updated:** 2025-12-28
+**Last Updated:** 2025-12-29
 
 ## High Priority
 
@@ -120,12 +120,25 @@
 
 ## Model Expansion
 
-### New Model Conversions
-- [ ] **Set up x86_64 environment for model conversion**
-  - RKLLM-Toolkit only works on x86_64
-  - Need Docker or remote x86_64 machine
-  - Toolkit: https://github.com/airockchip/rknn-llm (release-v1.1.4)
+### Docker Converter Toolkit ✅ DONE (2025-12-29)
+- [x] **Set up x86_64 environment for model conversion**
+  - Created `rkllm-converter/` Docker toolkit
+  - Supports x86_64 native and ARM64 via QEMU emulation
+  - RKLLM-Toolkit 1.2.3 with all dependencies
+  - See `rkllm-converter/README.md` for usage
 
+- [x] **Conversion scripts**
+  - `scripts/convert.py`: Single model conversion with full options
+  - `scripts/batch_convert.py`: Batch conversion via YAML config
+  - Supports w4a16, w4a16_g128, w8a8, w8a8_g128 quantization
+  - Target platforms: rk3588, rk3576
+
+- [x] **ARM64 runtime container**
+  - `Dockerfile.arm64-runtime` for RK3588/RK3576 devices
+  - Runs rkllama server with NPU access
+  - Community images also documented
+
+### New Model Conversions
 - [ ] **Convert Qwen2.5-3B model**
   - Larger model for better quality
   - Check if RK3588 has sufficient memory (~4GB+ needed)
@@ -205,6 +218,9 @@
 - [x] Create deployment guide (2025-12-27)
 - [x] Add nginx load balancer config (2025-12-27)
 - [x] Add architecture diagrams (2025-12-27)
+- [x] Modularize RKLLM for upstream compatibility - Phase 1 (2025-12-28)
+- [x] Add plugin discovery system - Phase 2 (2025-12-28)
+- [x] Create Docker model converter toolkit (2025-12-29)
 
 ---
 
