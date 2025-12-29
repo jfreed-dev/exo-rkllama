@@ -24,9 +24,10 @@ from exo.inference.shard import Shard
 from exo.inference.tokenizers import resolve_tokenizer
 from exo.download.shard_download import ShardDownloader
 from exo.helpers import DEBUG
-from exo.api.prometheus_metrics import (
+from exo.api.prometheus_metrics import MODEL_INFO, INFERENCE_ENGINE_INFO
+from exo.inference.rkllm.metrics import (
   RKLLM_SERVER_UP, RKLLM_INFERENCE_SECONDS, RKLLM_MODEL_LOAD_SECONDS,
-  RKLLM_HTTP_REQUESTS, MODEL_INFO, INFERENCE_ENGINE_INFO
+  RKLLM_HTTP_REQUESTS
 )
 
 from .rkllm_http_client import RKLLMHTTPClient, RKLLMServerConfig

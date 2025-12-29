@@ -48,28 +48,11 @@ def get_system_info():
 
 def is_rockchip_npu() -> bool:
   """Check if running on a Rockchip RK3588/RK3576 with NPU support."""
-  # Check device-tree for Rockchip SoC
-  compatible_path = '/proc/device-tree/compatible'
-  if os.path.exists(compatible_path):
-    try:
-      with open(compatible_path, 'rb') as f:
-        compatible = f.read().decode('utf-8', errors='ignore').lower()
-        if 'rk3588' in compatible or 'rk3576' in compatible:
-          return True
-    except Exception:
-      pass
-
-  # Check for RKLLM library as fallback indicator
-  rkllm_lib_paths = [
-    os.path.expanduser('~/RKLLAMA/lib/librkllmrt.so'),
-    '/usr/lib/librkllmrt.so',
-    '/usr/local/lib/librkllmrt.so',
-  ]
-  for path in rkllm_lib_paths:
-    if os.path.exists(path):
-      return True
-
-  return False
+  try:
+    from exo.inference.rkllm.detection import detect_rockchip_npu
+    return detect_rockchip_npu()
+  except ImportError:
+    return False  # RKLLM module not available
 
 
 def find_available_port(host: str = "", min_port: int = 49152, max_port: int = 65535) -> int:

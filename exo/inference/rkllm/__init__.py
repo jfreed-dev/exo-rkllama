@@ -19,5 +19,19 @@ Environment variables:
 
 from exo.inference.rkllm.rkllm_engine import RKLLMInferenceEngine
 from exo.inference.rkllm.rkllm_http_client import RKLLMHTTPClient, RKLLMServerConfig
+from exo.inference.rkllm.detection import detect_rockchip_npu, get_rockchip_soc_name
+from exo.inference.rkllm.models import RKLLM_MODELS, RKLLM_PRETTY_NAMES, is_streaming_model
 
-__all__ = ["RKLLMInferenceEngine", "RKLLMHTTPClient", "RKLLMServerConfig"]
+__all__ = [
+  # Core engine
+  "RKLLMInferenceEngine",
+  "RKLLMHTTPClient",
+  "RKLLMServerConfig",
+  # Detection
+  "detect_rockchip_npu",
+  "get_rockchip_soc_name",
+  # Models
+  "RKLLM_MODELS",
+  "RKLLM_PRETTY_NAMES",
+  "is_streaming_model",
+]

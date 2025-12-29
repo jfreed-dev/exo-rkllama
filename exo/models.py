@@ -152,44 +152,14 @@ model_cards = {
   "phi-4": { "layers": 40, "repo": { "MLXDynamicShardInferenceEngine": "mlx-community/phi-4-4bit", }, },
   # dummy
   "dummy": { "layers": 8, "repo": { "DummyInferenceEngine": "dummy", }, },
-  ### rkllm (Rockchip RK3588 NPU)
-  "qwen2.5-1.5b-rkllm": {
-    "layers": 28,
-    "repo": {
-      "RKLLMInferenceEngine": "Qwen/Qwen2.5-1.5B-Instruct",
-    },
-  },
-  "qwen2.5-1.5b-instruct-rkllm": {
-    "layers": 28,
-    "repo": {
-      "RKLLMInferenceEngine": "Qwen/Qwen2.5-1.5B-Instruct",
-    },
-  },
-  "qwen2.5-3b-rkllm": {
-    "layers": 36,
-    "repo": {
-      "RKLLMInferenceEngine": "Qwen/Qwen2.5-3B-Instruct",
-    },
-  },
-  "qwen2.5-7b-rkllm": {
-    "layers": 28,
-    "repo": {
-      "RKLLMInferenceEngine": "Qwen/Qwen2.5-7B-Instruct",
-    },
-  },
-  "deepseek-r1-1.5b-rkllm": {
-    "layers": 28,
-    "repo": {
-      "RKLLMInferenceEngine": "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
-    },
-  },
-  "phi-3-mini-rkllm": {
-    "layers": 32,
-    "repo": {
-      "RKLLMInferenceEngine": "microsoft/Phi-3-mini-4k-instruct",
-    },
-  },
 }
+
+# Conditionally load RKLLM models if the module is available
+try:
+  from exo.inference.rkllm.models import RKLLM_MODELS
+  model_cards.update(RKLLM_MODELS)
+except ImportError:
+  pass  # RKLLM module not available
 
 pretty_name = {
   "llama-3.3-70b": "Llama 3.3 70B",
@@ -267,14 +237,14 @@ pretty_name = {
   "deepseek-r1-distill-llama-70b-6bit": "DeepSeek R1 Distill Llama 70B (6-bit)",
   "deepseek-r1-distill-llama-70b-8bit": "DeepSeek R1 Distill Llama 70B (8-bit)",
   "deepseek-r1-distill-qwen-32b-6bit": "DeepSeek R1 Distill Qwen 32B (6-bit)",
-  # rkllm models
-  "qwen2.5-1.5b-rkllm": "Qwen 2.5 1.5B (RKLLM)",
-  "qwen2.5-1.5b-instruct-rkllm": "Qwen 2.5 1.5B Instruct (RKLLM)",
-  "qwen2.5-3b-rkllm": "Qwen 2.5 3B (RKLLM)",
-  "qwen2.5-7b-rkllm": "Qwen 2.5 7B (RKLLM)",
-  "deepseek-r1-1.5b-rkllm": "DeepSeek R1 1.5B (RKLLM)",
-  "phi-3-mini-rkllm": "Phi-3 Mini (RKLLM)",
 }
+
+# Conditionally load RKLLM pretty names if the module is available
+try:
+  from exo.inference.rkllm.models import RKLLM_PRETTY_NAMES
+  pretty_name.update(RKLLM_PRETTY_NAMES)
+except ImportError:
+  pass  # RKLLM module not available
 
 def get_repo(model_id: str, inference_engine_classname: str) -> Optional[str]:
   return model_cards.get(model_id, {}).get("repo", {}).get(inference_engine_classname, None)

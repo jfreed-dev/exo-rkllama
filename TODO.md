@@ -1,6 +1,6 @@
 # RKLLM Integration TODO List
 
-**Last Updated:** 2025-12-27
+**Last Updated:** 2025-12-28
 
 ## High Priority
 
@@ -52,6 +52,61 @@
 - DeepSeek responses take 3-5+ minutes due to extensive thinking
 - Not practical for interactive use; better for batch/reasoning tasks
 - Recommend Qwen2.5-1.5B-Instruct for general use (~8 tok/s, instant responses)
+
+## Modularization (Upstream Compatibility)
+
+**Goal:** Make RKLLM a cleanly separable module that can be maintained independently of the main exo-explore/exo project, enabling easy upstream syncing.
+
+### Phase 1: Consolidate RKLLM Configuration ✅ DONE (2025-12-28)
+- [x] **Create `exo/inference/rkllm/models.py`**
+  - Moved all RKLLM model definitions from `exo/models.py`
+  - Includes `RKLLM_MODELS` dict and `RKLLM_PRETTY_NAMES` dict
+  - Self-contained, no dependencies on core exo
+
+- [x] **Create `exo/inference/rkllm/detection.py`**
+  - Moved `detect_rockchip_npu()` from `exo/helpers.py`
+  - Includes device-tree and library detection logic
+  - Export function for use by helpers.py
+
+- [x] **Create `exo/inference/rkllm/metrics.py`**
+  - Moved RKLLM-specific Prometheus metrics from `exo/api/prometheus_metrics.py`
+  - 5 metrics: `RKLLM_SERVER_UP`, `RKLLM_INFERENCE_SECONDS`, etc.
+  - Imported conditionally in prometheus_metrics.py
+
+- [x] **Update core files with conditional imports**
+  - `exo/models.py`: Conditionally imports from rkllm/models.py
+  - `exo/helpers.py`: Conditionally imports detection function
+  - `exo/api/prometheus_metrics.py`: Conditional RKLLM metrics import
+  - `exo/inference/rkllm/__init__.py`: Updated exports
+
+### Phase 2: Upstream Plugin System PR
+- [ ] **Draft PR for exo-explore/exo**
+  - Add entry point discovery for inference engines
+  - Add entry point discovery for model providers
+  - Add entry point discovery for device detectors
+  - See `docs/PR_PLUGIN_SYSTEM.md` for full proposal
+
+- [ ] **Create reference implementation**
+  - Demonstrate plugin pattern with dummy engine
+  - Add documentation for third-party engine authors
+
+### Phase 3: Extract to Separate Package
+- [ ] **Create `exo-rkllm` PyPI package**
+  - Standalone package with entry point registration
+  - Zero changes required to upstream exo
+  - `pip install exo exo-rkllm` enables RKLLM support
+
+### Current Integration Points (to be modularized)
+| File | Changes | Status |
+|------|---------|--------|
+| `exo/main.py` | CLI arg + auto-detect (2 lines) | Keep minimal |
+| `exo/models.py` | 6 model defs (~28 lines) | → `rkllm/models.py` |
+| `exo/inference/inference_engine.py` | Factory registration (3 lines) | Keep (or plugin) |
+| `exo/helpers.py` | NPU detection (~25 lines) | → `rkllm/detection.py` |
+| `exo/topology/device_capabilities.py` | Device specs (~30 lines) | → conditional |
+| `exo/api/prometheus_metrics.py` | 5 metrics (~30 lines) | → `rkllm/metrics.py` |
+
+---
 
 ## Model Expansion
 

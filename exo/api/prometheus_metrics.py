@@ -80,37 +80,25 @@ INFERENCE_ENGINE_INFO = Info(
 )
 
 # =============================================================================
-# RKLLM-Specific Metrics
+# RKLLM-Specific Metrics (conditionally imported from rkllm module)
 # =============================================================================
 
-RKLLM_SERVER_UP = Gauge(
-  'rkllm_server_up',
-  'RKLLAMA server availability (1=up, 0=down)'
-)
-
-RKLLM_INFERENCE_SECONDS = Histogram(
-  'rkllm_inference_duration_seconds',
-  'RKLLM inference call duration in seconds',
-  buckets=[.01, .05, .1, .25, .5, 1, 2, 5, 10, 30]
-)
-
-RKLLM_MODEL_LOAD_SECONDS = Histogram(
-  'rkllm_model_load_duration_seconds',
-  'Time to load model on RKLLM server',
-  buckets=[1, 5, 10, 30, 60, 120, 300]
-)
-
-RKLLM_TOKENS_CACHED = Gauge(
-  'rkllm_tokens_cached',
-  'Number of tokens currently cached per request',
-  ['request_id']
-)
-
-RKLLM_HTTP_REQUESTS = Counter(
-  'rkllm_http_requests_total',
-  'Total HTTP requests to RKLLAMA server',
-  ['endpoint', 'status']
-)
+# Import RKLLM metrics from the rkllm module for backward compatibility
+try:
+  from exo.inference.rkllm.metrics import (
+    RKLLM_SERVER_UP,
+    RKLLM_INFERENCE_SECONDS,
+    RKLLM_MODEL_LOAD_SECONDS,
+    RKLLM_TOKENS_CACHED,
+    RKLLM_HTTP_REQUESTS,
+  )
+except ImportError:
+  # RKLLM module not available - create placeholder metrics
+  RKLLM_SERVER_UP = Gauge('rkllm_server_up', 'RKLLAMA server availability (1=up, 0=down)')
+  RKLLM_INFERENCE_SECONDS = Histogram('rkllm_inference_duration_seconds', 'RKLLM inference call duration', buckets=[.01, .05, .1, .25, .5, 1, 2, 5, 10, 30])
+  RKLLM_MODEL_LOAD_SECONDS = Histogram('rkllm_model_load_duration_seconds', 'Time to load model on RKLLM server', buckets=[1, 5, 10, 30, 60, 120, 300])
+  RKLLM_TOKENS_CACHED = Gauge('rkllm_tokens_cached', 'Number of tokens currently cached per request', ['request_id'])
+  RKLLM_HTTP_REQUESTS = Counter('rkllm_http_requests_total', 'Total HTTP requests to RKLLAMA server', ['endpoint', 'status'])
 
 # =============================================================================
 # Error Metrics
