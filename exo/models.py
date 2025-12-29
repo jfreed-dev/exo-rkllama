@@ -161,6 +161,14 @@ try:
 except ImportError:
   pass  # RKLLM module not available
 
+# Discover additional models from plugins via entry points
+try:
+  from exo.inference.plugin_discovery import discover_models
+  plugin_models = discover_models()
+  model_cards.update(plugin_models)
+except ImportError:
+  pass  # Plugin discovery not available
+
 pretty_name = {
   "llama-3.3-70b": "Llama 3.3 70B",
   "llama-3.2-1b": "Llama 3.2 1B",

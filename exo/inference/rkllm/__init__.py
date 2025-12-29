@@ -17,10 +17,39 @@ Environment variables:
   RKLLM_SERVER_PORT: Port of rkllama server (default: 8080)
 """
 
-from exo.inference.rkllm.rkllm_engine import RKLLMInferenceEngine
-from exo.inference.rkllm.rkllm_http_client import RKLLMHTTPClient, RKLLMServerConfig
-from exo.inference.rkllm.detection import detect_rockchip_npu, get_rockchip_soc_name
-from exo.inference.rkllm.models import RKLLM_MODELS, RKLLM_PRETTY_NAMES, is_streaming_model
+# Lazy imports to avoid circular dependency with exo.models
+# The full import chain rkllm_engine -> shard_download -> exo.models
+# would cause issues if exo.models imports from this package first.
+
+
+def __getattr__(name):
+  """Lazy import for module attributes to avoid circular imports."""
+  if name == "RKLLMInferenceEngine":
+    from exo.inference.rkllm.rkllm_engine import RKLLMInferenceEngine
+    return RKLLMInferenceEngine
+  elif name == "RKLLMHTTPClient":
+    from exo.inference.rkllm.rkllm_http_client import RKLLMHTTPClient
+    return RKLLMHTTPClient
+  elif name == "RKLLMServerConfig":
+    from exo.inference.rkllm.rkllm_http_client import RKLLMServerConfig
+    return RKLLMServerConfig
+  elif name == "detect_rockchip_npu":
+    from exo.inference.rkllm.detection import detect_rockchip_npu
+    return detect_rockchip_npu
+  elif name == "get_rockchip_soc_name":
+    from exo.inference.rkllm.detection import get_rockchip_soc_name
+    return get_rockchip_soc_name
+  elif name == "RKLLM_MODELS":
+    from exo.inference.rkllm.models import RKLLM_MODELS
+    return RKLLM_MODELS
+  elif name == "RKLLM_PRETTY_NAMES":
+    from exo.inference.rkllm.models import RKLLM_PRETTY_NAMES
+    return RKLLM_PRETTY_NAMES
+  elif name == "is_streaming_model":
+    from exo.inference.rkllm.models import is_streaming_model
+    return is_streaming_model
+  raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
   # Core engine

@@ -79,16 +79,26 @@
   - `exo/api/prometheus_metrics.py`: Conditional RKLLM metrics import
   - `exo/inference/rkllm/__init__.py`: Updated exports
 
-### Phase 2: Upstream Plugin System PR
-- [ ] **Draft PR for exo-explore/exo**
-  - Add entry point discovery for inference engines
-  - Add entry point discovery for model providers
-  - Add entry point discovery for device detectors
-  - See `docs/PR_PLUGIN_SYSTEM.md` for full proposal
+### Phase 2: Plugin System Implementation ✅ DONE (2025-12-28)
+- [x] **Create plugin discovery module**
+  - `exo/inference/plugin_discovery.py` with entry point discovery
+  - Supports `exo.inference_engines`, `exo.models`, `exo.device_detectors`
+  - Backward compatible with built-in engines
 
-- [ ] **Create reference implementation**
-  - Demonstrate plugin pattern with dummy engine
-  - Add documentation for third-party engine authors
+- [x] **Update inference_engine.py with plugin support**
+  - Uses plugin discovery for dynamic engine loading
+  - Maintains backward-compatible `inference_engine_classes` dict
+
+- [x] **Update models.py with plugin model discovery**
+  - Discovers models from entry points after built-in loading
+
+- [x] **Fix circular import in rkllm/__init__.py**
+  - Converted to lazy imports using `__getattr__`
+  - Avoids rkllm_engine -> shard_download -> models.py chain
+
+- [x] **Create documentation for third-party engine authors**
+  - `docs/PLUGIN_GUIDE.md` with complete tutorial
+  - Examples for engine, model, and detector registration
 
 ### Phase 3: Extract to Separate Package
 - [ ] **Create `exo-rkllm` PyPI package**
