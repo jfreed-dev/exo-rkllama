@@ -3,24 +3,24 @@ import io
 import random
 import tempfile
 import time
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Generator, Literal
 
 import mlx.core as mx
 from PIL import Image
 
-from exo.shared.types.api import (
+from exo.api.types import (
     AdvancedImageParams,
     ImageEditsTaskParams,
     ImageGenerationStats,
     ImageGenerationTaskParams,
     ImageSize,
 )
+from exo.shared.constants import EXO_MAX_CHUNK_SIZE
+from exo.shared.types.chunks import ImageChunk
+from exo.shared.types.common import ModelId
 from exo.shared.types.memory import Memory
-from exo.shared.types.worker.runner_response import (
-    ImageGenerationResponse,
-    PartialImageResponse,
-)
 from exo.worker.engines.image.distributed_model import DistributedImageModel
 
 
@@ -69,16 +69,9 @@ def warmup_image_generator(model: DistributedImageModel) -> Image.Image | None:
 def generate_image(
     model: DistributedImageModel,
     task: ImageGenerationTaskParams | ImageEditsTaskParams,
-) -> Generator[ImageGenerationResponse | PartialImageResponse, None, None]:
-    """Generate image(s), optionally yielding partial results.
-
-    When partial_images > 0 or stream=True, yields PartialImageResponse for
-    intermediate images, then ImageGenerationResponse for the final image.
-
-    Yields:
-        PartialImageResponse for intermediate images (if partial_images > 0, first image only)
-        ImageGenerationResponse for final complete images
-    """
+    cancel_checker: Callable[[], bool] | None = None,
+) -> Generator[ImageChunk, None, None]:
+    """Generate image(s), optionally yielding partial results."""
     width, height = parse_size(task.size)
     quality: Literal["low", "medium", "high"] = task.quality or "medium"
 
@@ -127,6 +120,7 @@ def generate_image(
                 image_path=image_path,
                 partial_images=partial_images,
                 advanced_params=advanced_params,
+                cancel_checker=cancel_checker,
             ):
                 if isinstance(result, tuple):
                     # Partial image: (Image, partial_index, total_partials)
@@ -139,12 +133,14 @@ def generate_image(
                         image = image.convert("RGB")
                     image.save(buffer, format=image_format)
 
-                    yield PartialImageResponse(
+                    yield from _process_image_response(
                         image_data=buffer.getvalue(),
-                        format=task.output_format,
+                        image_format=task.output_format,
                         partial_index=partial_idx,
                         total_partials=total_partials,
                         image_index=image_num,
+                        model_id=model.model_id,
+                        stats=None,
                     )
                 else:
                     image = result
@@ -166,7 +162,7 @@ def generate_image(
                             else 0.0
                         )
 
-                        peak_memory_gb = mx.get_peak_memory() / (1024**3)
+                        peak_memory = Memory.from_bytes(mx.get_peak_memory())
 
                         stats = ImageGenerationStats(
                             seconds_per_step=seconds_per_step,
@@ -175,7 +171,7 @@ def generate_image(
                             num_images=num_images,
                             image_width=width,
                             image_height=height,
-                            peak_memory_usage=Memory.from_gb(peak_memory_gb),
+                            peak_memory_usage=peak_memory,
                         )
 
                     buffer = io.BytesIO()
@@ -186,9 +182,54 @@ def generate_image(
                         image = image.convert("RGB")
                     image.save(buffer, format=image_format)
 
-                    yield ImageGenerationResponse(
+                    yield from _process_image_response(
                         image_data=buffer.getvalue(),
-                        format=task.output_format,
+                        image_format=task.output_format,
                         stats=stats,
                         image_index=image_num,
+                        model_id=model.model_id,
+                        partial_index=None,
+                        total_partials=None,
                     )
+
+
+def _process_image_response(
+    image_data: bytes,
+    image_index: int,
+    image_format: Literal["png", "jpeg", "webp"],
+    partial_index: int | None,
+    total_partials: int | None,
+    stats: ImageGenerationStats | None,
+    model_id: ModelId,
+) -> Iterator[ImageChunk]:
+    """Process a single image response and send chunks."""
+    is_partial = partial_index is not None
+    encoded_data = base64.b64encode(image_data).decode("utf-8")
+    # Extract stats from final ImageGenerationResponse if available
+    data_chunks = [
+        encoded_data[i : i + EXO_MAX_CHUNK_SIZE]
+        for i in range(0, len(encoded_data), EXO_MAX_CHUNK_SIZE)
+    ]
+    total_chunks = len(data_chunks)
+
+    def _data_to_chunk(item: tuple[int, str]) -> ImageChunk:
+        chunk_index, chunk_data = item
+        # Only include stats on the last chunk of the final image
+        chunk_stats = (
+            stats if chunk_index == total_chunks - 1 and not is_partial else None
+        )
+
+        return ImageChunk(
+            model=model_id,
+            data=chunk_data,
+            chunk_index=chunk_index,
+            total_chunks=total_chunks,
+            image_index=image_index,
+            is_partial=is_partial,
+            partial_index=partial_index,
+            total_partials=total_partials,
+            stats=chunk_stats,
+            format=image_format,
+        )
+
+    return map(_data_to_chunk, enumerate(data_chunks))

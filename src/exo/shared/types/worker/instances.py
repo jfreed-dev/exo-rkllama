@@ -2,9 +2,10 @@ from enum import Enum
 
 from pydantic import model_validator
 
+from exo.shared.models.model_cards import ModelTask
 from exo.shared.types.common import Host, Id, NodeId
 from exo.shared.types.worker.runners import RunnerId, ShardAssignments, ShardMetadata
-from exo.utils.pydantic_ext import CamelCaseModel, TaggedModel
+from exo.utils.pydantic_ext import FrozenModel, TaggedModel
 
 
 class InstanceId(Id):
@@ -38,7 +39,7 @@ class MlxJacclInstance(BaseInstance):
 Instance = MlxRingInstance | MlxJacclInstance
 
 
-class BoundInstance(CamelCaseModel):
+class BoundInstance(FrozenModel):
     instance: Instance
     bound_runner_id: RunnerId
     bound_node_id: NodeId
@@ -48,6 +49,13 @@ class BoundInstance(CamelCaseModel):
         shard = self.instance.shard(self.bound_runner_id)
         assert shard is not None
         return shard
+
+    @property
+    def is_image_model(self) -> bool:
+        return (
+            ModelTask.TextToImage in self.bound_shard.model_card.tasks
+            or ModelTask.ImageToImage in self.bound_shard.model_card.tasks
+        )
 
     @model_validator(mode="after")
     def validate_shard_exists(self) -> "BoundInstance":

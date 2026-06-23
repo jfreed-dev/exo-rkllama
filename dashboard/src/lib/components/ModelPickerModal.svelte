@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import { fade, fly } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
   import FamilySidebar from "./FamilySidebar.svelte";
@@ -7,6 +8,7 @@
   import HuggingFaceResultItem from "./HuggingFaceResultItem.svelte";
   import { getNodesWithModelDownloaded } from "$lib/utils/downloads";
   import { getRecentEntries } from "$lib/stores/recents.svelte";
+  import { addToast } from "$lib/stores/toast.svelte";
 
   interface ModelInfo {
     id: string;
@@ -36,6 +38,7 @@
     capabilities: string[];
     sizeRange: { min: number; max: number } | null;
     downloadedOnly: boolean;
+    readyOnly: boolean;
   }
 
   interface HuggingFaceModel {
@@ -48,6 +51,11 @@
   }
 
   type ModelFitStatus = "fits_now" | "fits_cluster_capacity" | "too_large";
+
+  export type InstanceStatus = {
+    status: string;
+    statusClass: string;
+  };
 
   type ModelPickerModalProps = {
     isOpen: boolean;
@@ -75,6 +83,7 @@
         macmon_info?: { memory?: { ram_total?: number } };
       }
     >;
+    instanceStatuses?: Record<string, InstanceStatus>;
   };
 
   let {
@@ -96,6 +105,7 @@
     usedMemoryGB,
     downloadsData,
     topologyNodes,
+    instanceStatuses = {},
   }: ModelPickerModalProps = $props();
 
   // Local state
@@ -107,6 +117,7 @@
     capabilities: [],
     sizeRange: null,
     downloadedOnly: false,
+    readyOnly: false,
   });
   let infoGroup = $state<ModelGroup | null>(null);
 
@@ -182,6 +193,13 @@
   let hfSearchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   let manualModelId = $state("");
   let addModelError = $state<string | null>(null);
+  let justAddedModelId = $state<string | null>(null);
+  let justAddedTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Inline HuggingFace search in main search bar
+  let mainSearchHfResults = $state<HuggingFaceModel[]>([]);
+  let mainSearchHfLoading = $state(false);
+  let mainSearchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Reset transient state when modal opens, but preserve tab selection
   $effect(() => {
@@ -191,6 +209,11 @@
       showFilters = false;
       manualModelId = "";
       addModelError = null;
+      justAddedModelId = null;
+      if (justAddedTimer) {
+        clearTimeout(justAddedTimer);
+        justAddedTimer = null;
+      }
     }
   });
 
@@ -203,6 +226,50 @@
     ) {
       fetchTrendingModels();
     }
+  });
+
+  // Inline HuggingFace search when local search returns no results
+  $effect(() => {
+    const query = searchQuery.trim();
+    const noLocalResults = filteredGroups.length === 0;
+
+    if (mainSearchDebounceTimer) {
+      clearTimeout(mainSearchDebounceTimer);
+      mainSearchDebounceTimer = null;
+    }
+
+    if (
+      selectedFamily === "huggingface" ||
+      selectedFamily === "recents" ||
+      selectedFamily === "favorites" ||
+      query.length < 2 ||
+      !noLocalResults
+    ) {
+      mainSearchHfResults = [];
+      mainSearchHfLoading = false;
+      return;
+    }
+
+    mainSearchHfLoading = true;
+    mainSearchDebounceTimer = setTimeout(async () => {
+      try {
+        const response = await fetch(
+          `/models/search?query=${encodeURIComponent(query)}&limit=10`,
+        );
+        if (response.ok) {
+          const results: HuggingFaceModel[] = await response.json();
+          mainSearchHfResults = results.filter(
+            (r) => !existingModelIds.has(r.id),
+          );
+        } else {
+          mainSearchHfResults = [];
+        }
+      } catch {
+        mainSearchHfResults = [];
+      } finally {
+        mainSearchHfLoading = false;
+      }
+    }, 500);
   });
 
   async function fetchTrendingModels() {
@@ -265,6 +332,24 @@
     addModelError = null;
     try {
       await onAddModel(modelId);
+      // Success: show toast, switch to All Models, highlight the model
+      const shortName = modelId.split("/").pop() || modelId;
+      addToast({ type: "success", message: `Added ${shortName}` });
+      justAddedModelId = modelId;
+      selectedFamily = null;
+      searchQuery = "";
+      // Scroll to the newly added model after DOM update
+      await tick();
+      const el = document.querySelector(
+        `[data-model-ids~="${CSS.escape(modelId)}"]`,
+      );
+      el?.scrollIntoView({ behavior: "smooth", block: "center" });
+      // Clear highlight after 4 seconds
+      if (justAddedTimer) clearTimeout(justAddedTimer);
+      justAddedTimer = setTimeout(() => {
+        justAddedModelId = null;
+        justAddedTimer = null;
+      }, 4000);
     } catch (error) {
       addModelError =
         error instanceof Error ? error.message : "Failed to add model";
@@ -372,8 +457,10 @@
       "deepseek",
       "gpt-oss",
       "llama",
+      "gemma",
       "flux",
       "qwen-image",
+      "nemotron",
     ];
     return Array.from(families).sort((a, b) => {
       const aIdx = familyOrder.indexOf(a);
@@ -436,6 +523,16 @@
         g.variants.some((v) => {
           const avail = modelDownloadAvailability.get(v.id);
           return avail && avail.nodeIds.length > 0;
+        }),
+      );
+    }
+
+    // Filter to ready/running models only
+    if (filters.readyOnly) {
+      result = result.filter((g) =>
+        g.variants.some((v) => {
+          const s = instanceStatuses[v.id];
+          return s && s.statusClass === "ready";
         }),
       );
     }
@@ -512,6 +609,18 @@
     );
   });
 
+  // Split filtered groups into recommended (fits_now) and others for visual separation
+  const recommendedGroups = $derived(
+    filteredGroups.filter((g) =>
+      g.variants.some((v) => getModelFitStatus(v.id) === "fits_now"),
+    ),
+  );
+  const otherGroups = $derived(
+    filteredGroups.filter(
+      (g) => !g.variants.some((v) => getModelFitStatus(v.id) === "fits_now"),
+    ),
+  );
+
   function toggleGroupExpanded(groupId: string) {
     const next = new Set(expandedGroups);
     if (next.has(groupId)) {
@@ -538,13 +647,19 @@
   }
 
   function clearFilters() {
-    filters = { capabilities: [], sizeRange: null, downloadedOnly: false };
+    filters = {
+      capabilities: [],
+      sizeRange: null,
+      downloadedOnly: false,
+      readyOnly: false,
+    };
   }
 
   const hasActiveFilters = $derived(
     filters.capabilities.length > 0 ||
       filters.sizeRange !== null ||
-      filters.downloadedOnly,
+      filters.downloadedOnly ||
+      filters.readyOnly,
   );
 </script>
 
@@ -804,6 +919,8 @@
                 {group}
                 isExpanded={expandedGroups.has(group.id)}
                 isFavorite={favorites.has(group.id)}
+                isHighlighted={justAddedModelId !== null &&
+                  group.variants.some((v) => v.id === justAddedModelId)}
                 {selectedModelId}
                 {canModelFit}
                 {getModelFitStatus}
@@ -813,6 +930,7 @@
                 onShowInfo={(g) => (infoGroup = g)}
                 downloadStatusMap={getVariantDownloadMap(group)}
                 launchedAt={recentTimestamps.get(group.variants[0]?.id ?? "")}
+                {instanceStatuses}
               />
             {/each}
           {/if}
@@ -840,11 +958,40 @@
             {/if}
           </div>
         {:else}
-          {#each filteredGroups as group}
+          <!-- Recommended for your cluster -->
+          {#if recommendedGroups.length > 0 && otherGroups.length > 0 && !searchQuery.trim()}
+            <div
+              class="sticky top-0 z-10 flex items-center gap-2 px-3 py-2 bg-green-950/60 border-b border-green-500/20 backdrop-blur-sm"
+            >
+              <svg
+                class="w-3.5 h-3.5 text-green-400 flex-shrink-0"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                />
+              </svg>
+              <span
+                class="text-xs font-mono text-green-400 tracking-wider uppercase"
+                >Recommended for your cluster</span
+              >
+              <span class="text-xs font-mono text-green-400/50"
+                >— fits in available memory</span
+              >
+            </div>
+          {/if}
+          {#each recommendedGroups as group}
             <ModelPickerGroup
               {group}
               isExpanded={expandedGroups.has(group.id)}
               isFavorite={favorites.has(group.id)}
+              isHighlighted={justAddedModelId !== null &&
+                group.variants.some((v) => v.id === justAddedModelId)}
               {selectedModelId}
               {canModelFit}
               {getModelFitStatus}
@@ -853,8 +1000,87 @@
               {onToggleFavorite}
               onShowInfo={(g) => (infoGroup = g)}
               downloadStatusMap={getVariantDownloadMap(group)}
+              {instanceStatuses}
             />
           {/each}
+          <!-- Other models -->
+          {#if otherGroups.length > 0 && recommendedGroups.length > 0 && !searchQuery.trim()}
+            <div
+              class="sticky top-0 z-10 flex items-center gap-2 px-3 py-2 bg-exo-dark-gray/80 border-y border-exo-medium-gray/20 backdrop-blur-sm"
+            >
+              <span
+                class="text-xs font-mono text-white/40 tracking-wider uppercase"
+                >Other models</span
+              >
+            </div>
+          {/if}
+          {#each otherGroups as group}
+            <ModelPickerGroup
+              {group}
+              isExpanded={expandedGroups.has(group.id)}
+              isFavorite={favorites.has(group.id)}
+              isHighlighted={justAddedModelId !== null &&
+                group.variants.some((v) => v.id === justAddedModelId)}
+              {selectedModelId}
+              {canModelFit}
+              {getModelFitStatus}
+              onToggleExpand={() => toggleGroupExpanded(group.id)}
+              onSelectModel={handleSelect}
+              {onToggleFavorite}
+              onShowInfo={(g) => (infoGroup = g)}
+              downloadStatusMap={getVariantDownloadMap(group)}
+              {instanceStatuses}
+            />
+          {/each}
+          <!-- Inline HuggingFace search results (shown when no local results match) -->
+          {#if filteredGroups.length === 0 && searchQuery.trim().length >= 2 && selectedFamily !== "huggingface" && selectedFamily !== "recents" && selectedFamily !== "favorites"}
+            {#if mainSearchHfLoading}
+              <div
+                class="flex items-center gap-2 px-3 py-2 border-t border-orange-400/20 bg-orange-950/20"
+              >
+                <span
+                  class="w-4 h-4 border-2 border-orange-400 border-t-transparent rounded-full animate-spin"
+                ></span>
+                <span class="text-xs font-mono text-orange-400/60"
+                  >Searching HuggingFace...</span
+                >
+              </div>
+            {:else if mainSearchHfResults.length > 0}
+              <div
+                class="sticky top-0 z-10 flex items-center gap-2 px-3 py-2 bg-orange-950/30 border-y border-orange-400/20 backdrop-blur-sm"
+              >
+                <span
+                  class="text-xs font-mono text-orange-400 tracking-wider uppercase"
+                  >From HuggingFace</span
+                >
+              </div>
+              {#each mainSearchHfResults as model}
+                <HuggingFaceResultItem
+                  {model}
+                  isAdded={existingModelIds.has(model.id)}
+                  isAdding={addingModelId === model.id}
+                  onAdd={() => handleAddModel(model.id)}
+                  onSelect={() => handleSelectHfModel(model.id)}
+                  downloadedOnNodes={downloadsData
+                    ? getNodesWithModelDownloaded(downloadsData, model.id).map(
+                        getNodeName,
+                      )
+                    : []}
+                />
+              {/each}
+              <button
+                type="button"
+                class="w-full px-3 py-2 text-xs font-mono text-orange-400/60 hover:text-orange-400 hover:bg-orange-500/10 transition-colors text-center"
+                onclick={() => {
+                  hfSearchQuery = searchQuery;
+                  searchHuggingFace(searchQuery);
+                  selectedFamily = "huggingface";
+                }}
+              >
+                See all results on Hub
+              </button>
+            {/if}
+          {/if}
         {/if}
       </div>
     </div>
@@ -873,6 +1099,11 @@
         {#if filters.downloadedOnly}
           <span class="px-1.5 py-0.5 bg-green-500/20 text-green-400 rounded"
             >Downloaded</span
+          >
+        {/if}
+        {#if filters.readyOnly}
+          <span class="px-1.5 py-0.5 bg-green-500/20 text-green-400 rounded"
+            >Ready</span
           >
         {/if}
         {#if filters.sizeRange}

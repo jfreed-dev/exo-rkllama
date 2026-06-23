@@ -5,9 +5,10 @@ from exo.routing.connection_message import ConnectionMessage
 from exo.shared.election import ElectionMessage
 from exo.shared.types.commands import ForwarderCommand, ForwarderDownloadCommand
 from exo.shared.types.events import (
-    ForwarderEvent,
+    GlobalForwarderEvent,
+    LocalForwarderEvent,
 )
-from exo.utils.pydantic_ext import CamelCaseModel
+from exo.utils.pydantic_ext import FrozenModel
 
 
 class PublishPolicy(str, Enum):
@@ -20,7 +21,7 @@ class PublishPolicy(str, Enum):
 
 
 @dataclass  # (frozen=True)
-class TypedTopic[T: CamelCaseModel]:
+class TypedTopic[T: FrozenModel]:
     topic: str
     publish_policy: PublishPolicy
 
@@ -36,8 +37,8 @@ class TypedTopic[T: CamelCaseModel]:
         return self.model_type.model_validate_json(b.decode("utf-8"))
 
 
-GLOBAL_EVENTS = TypedTopic("global_events", PublishPolicy.Always, ForwarderEvent)
-LOCAL_EVENTS = TypedTopic("local_events", PublishPolicy.Always, ForwarderEvent)
+GLOBAL_EVENTS = TypedTopic("global_events", PublishPolicy.Always, GlobalForwarderEvent)
+LOCAL_EVENTS = TypedTopic("local_events", PublishPolicy.Always, LocalForwarderEvent)
 COMMANDS = TypedTopic("commands", PublishPolicy.Always, ForwarderCommand)
 ELECTION_MESSAGES = TypedTopic(
     "election_messages", PublishPolicy.Always, ElectionMessage

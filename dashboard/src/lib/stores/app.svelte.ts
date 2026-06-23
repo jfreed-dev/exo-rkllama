@@ -74,6 +74,12 @@ export interface Instance {
   };
 }
 
+export interface RawInstanceLink {
+  linkId: string;
+  prefillInstances: string[];
+  decodeInstances: string[];
+}
+
 // Granular node state types from the new state structure
 interface RawNodeIdentity {
   modelId?: string;
@@ -168,7 +174,7 @@ export interface ModelDownloadStatus {
 export interface PlacementPreview {
   model_id: string;
   sharding: "Pipeline" | "Tensor";
-  instance_meta: "MlxRing" | "MlxIbv" | "MlxJaccl";
+  instance_meta: "MlxRing" | "MlxJaccl";
   instance: unknown | null;
   memory_delta_by_node: Record<string, number> | null;
   error: string | null;
@@ -219,11 +225,11 @@ interface RawStateResponse {
     string,
     {
       MlxRingInstance?: Instance;
-      MlxIbvInstance?: Instance;
       MlxJacclInstance?: Instance;
     }
   >;
   runners?: Record<string, unknown>;
+  instanceLinks?: Record<string, RawInstanceLink>;
   downloads?: Record<string, unknown[]>;
   // New granular node state fields
   nodeIdentities?: Record<string, RawNodeIdentity>;
@@ -250,14 +256,20 @@ interface RawStateResponse {
   >;
   // Thunderbolt bridge cycles (nodes with bridge enabled forming loops)
   thunderboltBridgeCycles?: string[][];
+  // Disk usage per node
+  nodeDisk?: Record<
+    string,
+    { total: { inBytes: number }; available: { inBytes: number } }
+  >;
 }
 
 export interface MessageAttachment {
-  type: "image" | "text" | "file" | "generated-image";
+  type: "image" | "text" | "file" | "generated-image" | "pdf";
   name: string;
   content?: string;
   preview?: string;
   mimeType?: string;
+  pageImages?: string[];
 }
 
 export interface TopLogprob {
@@ -271,6 +283,13 @@ export interface TokenData {
   logprob: number;
   probability: number;
   topLogprobs: TopLogprob[];
+}
+
+export interface PrefillProgress {
+  processed: number;
+  total: number;
+  /** Timestamp (performance.now()) when prefill started. */
+  startedAt: number;
 }
 
 export interface Message {
@@ -520,11 +539,17 @@ class AppStore {
   ttftMs = $state<number | null>(null); // Time to first token in ms
   tps = $state<number | null>(null); // Tokens per second
   totalTokens = $state<number>(0); // Total tokens in current response
+  prefillProgress = $state<PrefillProgress | null>(null);
+
+  // Abort controller for stopping generation
+  private currentAbortController: AbortController | null = null;
 
   // Topology state
   topologyData = $state<TopologyData | null>(null);
   instances = $state<Record<string, unknown>>({});
   runners = $state<Record<string, unknown>>({});
+  instanceLinks = $state<Record<string, RawInstanceLink>>({});
+  featureFlags = $state<Record<string, boolean>>({});
   downloads = $state<Record<string, unknown[]>>({});
   nodeDisk = $state<
     Record<
@@ -565,6 +590,8 @@ class AppStore {
   debugMode = $state(false);
   topologyOnlyMode = $state(false);
   chatSidebarVisible = $state(true); // Shown by default
+  mobileChatSidebarOpen = $state(false); // Mobile drawer state
+  mobileRightSidebarOpen = $state(false); // Mobile right drawer state
 
   // Image generation params
   imageGenerationParams = $state<ImageGenerationParams>({
@@ -573,6 +600,12 @@ class AppStore {
 
   // Image editing state
   editingImage = $state<EditingImage | null>(null);
+
+  /** True when the backend is reachable. */
+  isConnected = $state<boolean>(true);
+  /** Number of consecutive fetch failures. */
+  private consecutiveFailures = 0;
+  private static readonly CONNECTION_LOST_THRESHOLD = 3;
 
   private fetchInterval: ReturnType<typeof setInterval> | null = null;
   private previewsInterval: ReturnType<typeof setInterval> | null = null;
@@ -826,6 +859,10 @@ class AppStore {
     this.thinkingEnabled = conversation.enableThinking ?? true;
     this.refreshConversationModelFromInstances();
 
+    // Sync global selection to the loaded conversation's model so reactive
+    // effects in +page.svelte can determine the correct chat launch state.
+    this.selectedChatModel = conversation.modelId || "";
+
     return true;
   }
 
@@ -896,11 +933,7 @@ class AppStore {
 
     let instanceType: string | null = null;
     if (instanceTag === "MlxRingInstance") instanceType = "MLX Ring";
-    else if (
-      instanceTag === "MlxIbvInstance" ||
-      instanceTag === "MlxJacclInstance"
-    )
-      instanceType = "MLX RDMA";
+    else if (instanceTag === "MlxJacclInstance") instanceType = "MLX RDMA";
 
     let sharding: string | null = null;
     const inst = instance as {
@@ -1224,8 +1257,33 @@ class AppStore {
     this.saveChatSidebarVisibleToStorage();
   }
 
+  getMobileChatSidebarOpen(): boolean {
+    return this.mobileChatSidebarOpen;
+  }
+
+  setMobileChatSidebarOpen(open: boolean) {
+    this.mobileChatSidebarOpen = open;
+  }
+
+  toggleMobileChatSidebar() {
+    this.mobileChatSidebarOpen = !this.mobileChatSidebarOpen;
+  }
+
+  getMobileRightSidebarOpen(): boolean {
+    return this.mobileRightSidebarOpen;
+  }
+
+  setMobileRightSidebarOpen(open: boolean) {
+    this.mobileRightSidebarOpen = open;
+  }
+
+  toggleMobileRightSidebar() {
+    this.mobileRightSidebarOpen = !this.mobileRightSidebarOpen;
+  }
+
   startPolling() {
     this.fetchState();
+    this.fetchFeatureFlags();
     this.fetchInterval = setInterval(() => this.fetchState(), 1000);
   }
 
@@ -1235,6 +1293,16 @@ class AppStore {
       this.fetchInterval = null;
     }
     this.stopPreviewsPolling();
+  }
+
+  async fetchFeatureFlags() {
+    try {
+      const response = await fetch("/v1/feature-flags");
+      if (!response.ok) return;
+      this.featureFlags = await response.json();
+    } catch {
+      // Silently ignore — defaults to all-disabled.
+    }
   }
 
   async fetchState() {
@@ -1262,6 +1330,11 @@ class AppStore {
       if (data.runners) {
         this.runners = data.runners;
       }
+      if (data.instanceLinks) {
+        this.instanceLinks = data.instanceLinks;
+      } else {
+        this.instanceLinks = {};
+      }
       if (data.downloads) {
         this.downloads = data.downloads;
       }
@@ -1279,7 +1352,19 @@ class AppStore {
       // Thunderbolt bridge status per node
       this.nodeThunderboltBridge = data.nodeThunderboltBridge ?? {};
       this.lastUpdate = Date.now();
+      // Connection recovered
+      if (!this.isConnected) {
+        this.isConnected = true;
+      }
+      this.consecutiveFailures = 0;
     } catch (error) {
+      this.consecutiveFailures++;
+      if (
+        this.consecutiveFailures >= AppStore.CONNECTION_LOST_THRESHOLD &&
+        this.isConnected
+      ) {
+        this.isConnected = false;
+      }
       console.error("Error fetching state:", error);
     }
   }
@@ -1518,6 +1603,7 @@ class AppStore {
     // Remove messages after user message (including the user message for image requests
     // since generateImage/editImage will re-add it)
     this.messages = this.messages.slice(0, lastUserIndex);
+    this.updateActiveConversation();
 
     switch (requestType) {
       case "image-generation":
@@ -1609,7 +1695,15 @@ class AppStore {
               }
             }
           }
-          return { role: m.role, content: msgContent };
+          const out: {
+            role: string;
+            content: string;
+            reasoning_content?: string;
+          } = { role: m.role, content: msgContent };
+          if (m.role === "assistant" && m.thinking) {
+            out.reasoning_content = m.thinking;
+          }
+          return out;
         }),
       ];
 
@@ -1643,11 +1737,12 @@ class AppStore {
       if (!reader) throw new Error("No response body");
 
       let fullContent = prefixText;
+      let streamedThinking = "";
       const collectedTokens: TokenData[] = [...tokensToKeep];
 
       interface ChatCompletionChunk {
         choices?: Array<{
-          delta?: { content?: string };
+          delta?: { content?: string; reasoning_content?: string };
           logprobs?: {
             content?: Array<{
               token: string;
@@ -1668,6 +1763,7 @@ class AppStore {
         (parsed) => {
           const choice = parsed.choices?.[0];
           const delta = choice?.delta?.content;
+          const thinkingDelta = choice?.delta?.reasoning_content;
 
           // Collect logprobs data
           const logprobsContent = choice?.logprobs?.content;
@@ -1686,7 +1782,11 @@ class AppStore {
             }
           }
 
-          if (delta) {
+          if (thinkingDelta) {
+            streamedThinking += thinkingDelta;
+          }
+
+          if (delta || thinkingDelta) {
             if (firstTokenTime === null) {
               firstTokenTime = performance.now();
               this.ttftMs = firstTokenTime - requestStartTime;
@@ -1700,9 +1800,14 @@ class AppStore {
               this.tps = ((tokenCount - tokensToKeep.length) / elapsed) * 1000;
             }
 
-            fullContent += delta;
-            const { displayContent, thinkingContent } =
+            if (delta) {
+              fullContent += delta;
+            }
+            const { displayContent, thinkingContent: tagThinking } =
               this.stripThinkingTags(fullContent);
+            const combinedThinking = [streamedThinking, tagThinking]
+              .filter(Boolean)
+              .join("\n\n");
 
             if (this.activeConversationId === targetConversationId) {
               this.currentResponse = displayContent;
@@ -1714,7 +1819,7 @@ class AppStore {
               messageId,
               (m) => {
                 m.content = displayContent;
-                m.thinking = thinkingContent || undefined;
+                m.thinking = combinedThinking || undefined;
                 m.tokens = [...collectedTokens];
               },
             );
@@ -1722,15 +1827,26 @@ class AppStore {
             this.persistConversation(targetConversationId);
           }
         },
+        {
+          generation_stats: (data) => {
+            const stats = data as { generation_tps: number };
+            if (stats.generation_tps > 0) {
+              this.tps = stats.generation_tps;
+            }
+          },
+        },
       );
 
       // Final update
       if (this.conversationExists(targetConversationId)) {
-        const { displayContent, thinkingContent } =
+        const { displayContent, thinkingContent: tagThinking } =
           this.stripThinkingTags(fullContent);
+        const finalThinking = [streamedThinking, tagThinking]
+          .filter(Boolean)
+          .join("\n\n");
         this.updateConversationMessage(targetConversationId, messageId, (m) => {
           m.content = displayContent;
-          m.thinking = thinkingContent || undefined;
+          m.thinking = finalThinking || undefined;
           m.tokens = [...collectedTokens];
           if (this.ttftMs !== null) m.ttftMs = this.ttftMs;
           if (this.tps !== null) m.tps = this.tps;
@@ -1794,7 +1910,15 @@ class AppStore {
       const apiMessages = [
         systemPrompt,
         ...targetConversation.messages.slice(0, -1).map((m) => {
-          return { role: m.role, content: m.content };
+          const out: {
+            role: string;
+            content: string;
+            reasoning_content?: string;
+          } = { role: m.role, content: m.content };
+          if (m.role === "assistant" && m.thinking) {
+            out.reasoning_content = m.thinking;
+          }
+          return out;
         }),
       ];
 
@@ -1806,7 +1930,7 @@ class AppStore {
           assistantMessage.id,
           (msg) => {
             msg.content =
-              "Error: No model available. Please launch an instance first.";
+              "No model is loaded yet. Select a model from the sidebar to get started — it will download and load automatically.";
           },
         );
         this.syncActiveMessagesIfNeeded(targetConversationId);
@@ -1838,11 +1962,12 @@ class AppStore {
       }
 
       let streamedContent = "";
+      let streamedThinking = "";
       const collectedTokens: TokenData[] = [];
 
       interface ChatCompletionChunk {
         choices?: Array<{
-          delta?: { content?: string };
+          delta?: { content?: string; reasoning_content?: string };
           logprobs?: {
             content?: Array<{
               token: string;
@@ -1863,6 +1988,7 @@ class AppStore {
         (parsed) => {
           const choice = parsed.choices?.[0];
           const delta = choice?.delta?.content;
+          const thinkingDelta = choice?.delta?.reasoning_content;
 
           // Collect logprobs data
           const logprobsContent = choice?.logprobs?.content;
@@ -1881,10 +2007,19 @@ class AppStore {
             }
           }
 
-          if (delta) {
-            streamedContent += delta;
-            const { displayContent, thinkingContent } =
+          if (thinkingDelta) {
+            streamedThinking += thinkingDelta;
+          }
+
+          if (delta || thinkingDelta) {
+            if (delta) {
+              streamedContent += delta;
+            }
+            const { displayContent, thinkingContent: tagThinking } =
               this.stripThinkingTags(streamedContent);
+            const combinedThinking = [streamedThinking, tagThinking]
+              .filter(Boolean)
+              .join("\n\n");
 
             // Only update currentResponse if target conversation is active
             if (this.activeConversationId === targetConversationId) {
@@ -1897,7 +2032,7 @@ class AppStore {
               assistantMessage.id,
               (msg) => {
                 msg.content = displayContent;
-                msg.thinking = thinkingContent || undefined;
+                msg.thinking = combinedThinking || undefined;
                 msg.tokens = [...collectedTokens];
               },
             );
@@ -1905,18 +2040,29 @@ class AppStore {
             this.persistConversation(targetConversationId);
           }
         },
+        {
+          generation_stats: (data) => {
+            const stats = data as { generation_tps: number };
+            if (stats.generation_tps > 0) {
+              this.tps = stats.generation_tps;
+            }
+          },
+        },
       );
 
       // Final cleanup of the message (if conversation still exists)
       if (this.conversationExists(targetConversationId)) {
-        const { displayContent, thinkingContent } =
+        const { displayContent, thinkingContent: tagThinking } =
           this.stripThinkingTags(streamedContent);
+        const finalThinking = [streamedThinking, tagThinking]
+          .filter(Boolean)
+          .join("\n\n");
         this.updateConversationMessage(
           targetConversationId,
           assistantMessage.id,
           (msg) => {
             msg.content = displayContent;
-            msg.thinking = thinkingContent || undefined;
+            msg.thinking = finalThinking || undefined;
             msg.tokens = [...collectedTokens];
           },
         );
@@ -2005,6 +2151,7 @@ class AppStore {
     reader: ReadableStreamDefaultReader<Uint8Array>,
     targetConversationId: string,
     onChunk: (parsed: T) => void,
+    onEvent?: Record<string, (data: unknown) => void>,
   ): Promise<void> {
     const decoder = new TextDecoder();
     let buffer = "";
@@ -2024,6 +2171,24 @@ class AppStore {
       for (const line of lines) {
         const trimmed = line.trim();
         if (!trimmed) continue;
+
+        // Handle SSE comments (": key json") for prefill progress etc.
+        if (trimmed.startsWith(": ") && onEvent) {
+          const comment = trimmed.slice(2);
+          const spaceIdx = comment.indexOf(" ");
+          if (spaceIdx > 0) {
+            const key = comment.slice(0, spaceIdx);
+            if (onEvent[key]) {
+              try {
+                const parsed = JSON.parse(comment.slice(spaceIdx + 1));
+                onEvent[key](parsed);
+              } catch {
+                // Skip malformed JSON in comment
+              }
+            }
+          }
+          continue;
+        }
 
         if (trimmed.startsWith("data: ")) {
           const data = trimmed.slice(6);
@@ -2088,10 +2253,9 @@ class AppStore {
    * @returns The model ID to use, or null if none available
    */
   private getModelForRequest(modelId?: string): string | null {
-    if (modelId) return modelId;
-    if (this.selectedChatModel) return this.selectedChatModel;
+    const requestedModelId = modelId || this.selectedChatModel;
 
-    // Try to get model from first running instance
+    // Only models with a placed instance can receive requests; disk downloads alone are not enough.
     for (const [, instanceWrapper] of Object.entries(this.instances)) {
       if (instanceWrapper && typeof instanceWrapper === "object") {
         const keys = Object.keys(instanceWrapper as Record<string, unknown>);
@@ -2099,8 +2263,15 @@ class AppStore {
           const instance = (instanceWrapper as Record<string, unknown>)[
             keys[0]
           ] as { shardAssignments?: { modelId?: string } };
-          if (instance?.shardAssignments?.modelId) {
-            return instance.shardAssignments.modelId;
+          const instanceModelId = instance?.shardAssignments?.modelId;
+
+          // ensure to only return requestedModelId that matches an instance
+          // or fall back to first instance
+          if (
+            instanceModelId &&
+            (!requestedModelId || requestedModelId === instanceModelId)
+          ) {
+            return instanceModelId;
           }
         }
       }
@@ -2119,6 +2290,7 @@ class AppStore {
       type: string;
       textContent?: string;
       preview?: string;
+      pageImages?: string[];
     }[],
     enableThinking?: boolean | null,
   ): Promise<void> {
@@ -2154,6 +2326,20 @@ class AppStore {
             preview: file.preview,
             mimeType: file.type,
           });
+        } else if (
+          file.pageImages ||
+          (file.textContent && file.type === "application/pdf")
+        ) {
+          attachments.push({
+            type: "pdf",
+            name: file.name,
+            content: file.textContent,
+            pageImages: file.pageImages,
+            mimeType: file.type,
+          });
+          if (file.textContent) {
+            fileContext += `\n\n[File: ${file.name}]\n\`\`\`\n${file.textContent}\n\`\`\``;
+          }
         } else if (file.textContent) {
           attachments.push({
             type: "text",
@@ -2221,22 +2407,89 @@ class AppStore {
       const apiMessages = [
         systemPrompt,
         ...targetConversation.messages.slice(0, -1).map((m) => {
-          // Build content including any text file attachments
+          // Check if this message has image or PDF attachments
+          const visualAttachments = m.attachments?.filter(
+            (a) =>
+              (a.type === "image" && a.preview) ||
+              (a.type === "pdf" && a.pageImages?.length),
+          );
+
+          if (visualAttachments && visualAttachments.length > 0) {
+            // Build multimodal content array (OpenAI vision format)
+            const contentParts: Array<
+              | { type: "text"; text: string }
+              | { type: "image_url"; image_url: { url: string } }
+            > = [];
+
+            // Add image parts first
+            for (const att of visualAttachments) {
+              if (att.type === "image" && att.preview) {
+                contentParts.push({
+                  type: "image_url",
+                  image_url: { url: att.preview },
+                });
+              } else if (att.type === "pdf" && att.pageImages) {
+                for (const pageImg of att.pageImages) {
+                  contentParts.push({
+                    type: "image_url",
+                    image_url: { url: pageImg },
+                  });
+                }
+              }
+            }
+
+            // Build text content including any text/pdf file attachments
+            let textContent = m.content;
+            if (m.attachments) {
+              for (const attachment of m.attachments) {
+                if (
+                  (attachment.type === "text" || attachment.type === "pdf") &&
+                  attachment.content
+                ) {
+                  textContent += `\n\n[File: ${attachment.name}]\n\`\`\`\n${attachment.content}\n\`\`\``;
+                }
+              }
+            }
+
+            if (textContent) {
+              contentParts.push({ type: "text", text: textContent });
+            }
+
+            const out: {
+              role: string;
+              content: typeof contentParts;
+              reasoning_content?: string;
+            } = { role: m.role, content: contentParts };
+            if (m.role === "assistant" && m.thinking) {
+              out.reasoning_content = m.thinking;
+            }
+            return out;
+          }
+
+          // Text-only message (original path)
           let msgContent = m.content;
 
-          // Add text attachments as context
+          // Add text/pdf attachments as context
           if (m.attachments) {
             for (const attachment of m.attachments) {
-              if (attachment.type === "text" && attachment.content) {
+              if (
+                (attachment.type === "text" || attachment.type === "pdf") &&
+                attachment.content
+              ) {
                 msgContent += `\n\n[File: ${attachment.name}]\n\`\`\`\n${attachment.content}\n\`\`\``;
               }
             }
           }
 
-          return {
-            role: m.role,
-            content: msgContent,
-          };
+          const out: {
+            role: string;
+            content: string;
+            reasoning_content?: string;
+          } = { role: m.role, content: msgContent };
+          if (m.role === "assistant" && m.thinking) {
+            out.reasoning_content = m.thinking;
+          }
+          return out;
         }),
       ];
 
@@ -2244,7 +2497,7 @@ class AppStore {
       const modelToUse = this.getModelForRequest();
       if (!modelToUse) {
         throw new Error(
-          "No model selected and no running instances available. Please launch an instance first.",
+          "No model is loaded yet. Select a model from the sidebar to get started — it will download and load automatically.",
         );
       }
 
@@ -2255,6 +2508,9 @@ class AppStore {
       const requestStartTime = performance.now();
       let firstTokenTime: number | null = null;
       let tokenCount = 0;
+
+      const abortController = new AbortController();
+      this.currentAbortController = abortController;
 
       const response = await fetch("/v1/chat/completions", {
         method: "POST",
@@ -2272,6 +2528,7 @@ class AppStore {
             enable_thinking: enableThinking,
           }),
         }),
+        signal: abortController.signal,
       });
 
       if (!response.ok) {
@@ -2285,10 +2542,11 @@ class AppStore {
       }
 
       let streamedContent = "";
-
+      let streamedThinking = "";
+      let serverTpsReceived = false;
       interface ChatCompletionChunk {
         choices?: Array<{
-          delta?: { content?: string };
+          delta?: { content?: string; reasoning_content?: string };
           logprobs?: {
             content?: Array<{
               token: string;
@@ -2309,8 +2567,14 @@ class AppStore {
         reader,
         targetConversationId,
         (parsed) => {
+          // Clear prefill progress when first token data arrives
+          if (this.prefillProgress) {
+            this.prefillProgress = null;
+          }
+
           const choice = parsed.choices?.[0];
           const tokenContent = choice?.delta?.content;
+          const thinkingContent = choice?.delta?.reasoning_content;
 
           // Collect logprobs data
           const logprobsContent = choice?.logprobs?.content;
@@ -2329,7 +2593,11 @@ class AppStore {
             }
           }
 
-          if (tokenContent) {
+          if (thinkingContent) {
+            streamedThinking += thinkingContent;
+          }
+
+          if (tokenContent || thinkingContent) {
             // Track first token for TTFT
             if (firstTokenTime === null) {
               firstTokenTime = performance.now();
@@ -2340,17 +2608,21 @@ class AppStore {
             tokenCount += 1;
             this.totalTokens = tokenCount;
 
-            // Update real-time TPS during streaming
             if (firstTokenTime !== null && tokenCount > 1) {
               const elapsed = performance.now() - firstTokenTime;
               this.tps = (tokenCount / elapsed) * 1000;
             }
 
-            streamedContent += tokenContent;
+            if (tokenContent) {
+              streamedContent += tokenContent;
+            }
 
-            // Strip thinking tags for display and extract thinking content
-            const { displayContent, thinkingContent } =
+            // Use stripThinkingTags as fallback for any <think> tags still in content
+            const { displayContent, thinkingContent: tagThinking } =
               this.stripThinkingTags(streamedContent);
+            const combinedThinking = [streamedThinking, tagThinking]
+              .filter(Boolean)
+              .join("\n\n");
 
             // Only update currentResponse if target conversation is active
             if (this.activeConversationId === targetConversationId) {
@@ -2363,7 +2635,7 @@ class AppStore {
               assistantMessage.id,
               (msg) => {
                 msg.content = displayContent;
-                msg.thinking = thinkingContent || undefined;
+                msg.thinking = combinedThinking || undefined;
                 msg.tokens = [...collectedTokens];
               },
             );
@@ -2371,24 +2643,54 @@ class AppStore {
             this.persistConversation(targetConversationId);
           }
         },
+        {
+          prefill_progress: (data) => {
+            // TaggedModel wraps as {"PrefillProgressChunk": {...}}
+            // model_dump_json() uses snake_case (by_alias defaults to False)
+            const raw = data as Record<string, unknown>;
+            const inner = (raw["PrefillProgressChunk"] ?? raw) as {
+              processed_tokens: number;
+              total_tokens: number;
+            };
+            this.prefillProgress = {
+              processed: inner.processed_tokens,
+              total: inner.total_tokens,
+              startedAt: this.prefillProgress?.startedAt ?? performance.now(),
+            };
+          },
+          generation_stats: (data) => {
+            const stats = data as { generation_tps: number };
+
+            if (stats.generation_tps > 0) {
+              this.tps = stats.generation_tps;
+              serverTpsReceived = true;
+            }
+          },
+        },
       );
 
-      // Calculate final TPS
-      if (firstTokenTime !== null && tokenCount > 1) {
+      // Clear prefill progress after stream ends
+      this.prefillProgress = null;
+
+      // Use server-side TPS if available, otherwise fall back to client-side
+      if (!serverTpsReceived && firstTokenTime !== null && tokenCount > 1) {
         const totalGenerationTime = performance.now() - firstTokenTime;
-        this.tps = (tokenCount / totalGenerationTime) * 1000; // tokens per second
+        this.tps = (tokenCount / totalGenerationTime) * 1000;
       }
 
       // Final cleanup of the message (if conversation still exists)
       if (this.conversationExists(targetConversationId)) {
-        const { displayContent, thinkingContent } =
+        const { displayContent, thinkingContent: tagThinking } =
           this.stripThinkingTags(streamedContent);
+        const finalThinking = [streamedThinking, tagThinking]
+          .filter(Boolean)
+          .join("\n\n");
         this.updateConversationMessage(
           targetConversationId,
           assistantMessage.id,
           (msg) => {
             msg.content = displayContent;
-            msg.thinking = thinkingContent || undefined;
+            msg.thinking = finalThinking || undefined;
             msg.tokens = [...collectedTokens];
             // Store performance metrics on the message
             if (this.ttftMs !== null) {
@@ -2403,18 +2705,29 @@ class AppStore {
         this.persistConversation(targetConversationId);
       }
     } catch (error) {
-      console.error("Error sending message:", error);
-      this.handleStreamingError(
-        error,
-        targetConversationId,
-        assistantMessage.id,
-        "Failed to get response",
-      );
+      if (error instanceof DOMException && error.name === "AbortError") {
+        // User stopped generation — not an error
+      } else {
+        console.error("Error sending message:", error);
+        this.handleStreamingError(
+          error,
+          targetConversationId,
+          assistantMessage.id,
+          "Failed to get response",
+        );
+      }
     } finally {
+      this.currentAbortController = null;
+      this.prefillProgress = null;
       this.isLoading = false;
       this.currentResponse = "";
       this.saveConversationsToStorage();
     }
+  }
+
+  stopGeneration(): void {
+    this.currentAbortController?.abort();
+    this.currentAbortController = null;
   }
 
   /**
@@ -2466,6 +2779,9 @@ class AppStore {
     // Sync to this.messages if viewing the target conversation
     this.syncActiveMessagesIfNeeded(targetConversationId);
     this.saveConversationsToStorage();
+
+    const abortController = new AbortController();
+    this.currentAbortController = abortController;
 
     try {
       // Determine the model to use
@@ -2521,6 +2837,7 @@ class AppStore {
           "Content-Type": "application/json",
         },
         body: JSON.stringify(requestBody),
+        signal: abortController.signal,
       });
 
       if (!response.ok) {
@@ -2660,14 +2977,27 @@ class AppStore {
         );
       }
     } catch (error) {
-      console.error("Error generating image:", error);
-      this.handleStreamingError(
-        error,
-        targetConversationId,
-        assistantMessage.id,
-        "Failed to generate image",
-      );
+      if (abortController.signal.aborted) {
+        this.updateConversationMessage(
+          targetConversationId,
+          assistantMessage.id,
+          (msg) => {
+            msg.content = "Cancelled";
+            msg.attachments = [];
+          },
+        );
+        this.syncActiveMessagesIfNeeded(targetConversationId);
+      } else {
+        console.error("Error generating image:", error);
+        this.handleStreamingError(
+          error,
+          targetConversationId,
+          assistantMessage.id,
+          "Failed to generate image",
+        );
+      }
     } finally {
+      this.currentAbortController = null;
       this.isLoading = false;
       this.saveConversationsToStorage();
     }
@@ -2731,6 +3061,9 @@ class AppStore {
     // Clear editing state
     this.editingImage = null;
 
+    const abortController = new AbortController();
+    this.currentAbortController = abortController;
+
     try {
       // Determine the model to use
       const model = this.getModelForRequest(modelId);
@@ -2792,6 +3125,7 @@ class AppStore {
       const apiResponse = await fetch("/v1/images/edits", {
         method: "POST",
         body: formData,
+        signal: abortController.signal,
       });
 
       if (!apiResponse.ok) {
@@ -2892,14 +3226,27 @@ class AppStore {
         );
       }
     } catch (error) {
-      console.error("Error editing image:", error);
-      this.handleStreamingError(
-        error,
-        targetConversationId,
-        assistantMessage.id,
-        "Failed to edit image",
-      );
+      if (abortController.signal.aborted) {
+        this.updateConversationMessage(
+          targetConversationId,
+          assistantMessage.id,
+          (msg) => {
+            msg.content = "Cancelled";
+            msg.attachments = [];
+          },
+        );
+        this.syncActiveMessagesIfNeeded(targetConversationId);
+      } else {
+        console.error("Error editing image:", error);
+        this.handleStreamingError(
+          error,
+          targetConversationId,
+          assistantMessage.id,
+          "Failed to edit image",
+        );
+      }
     } finally {
+      this.currentAbortController = null;
       this.isLoading = false;
       this.saveConversationsToStorage();
     }
@@ -2967,6 +3314,85 @@ class AppStore {
   }
 
   /**
+   * Cancel/pause an active download on a specific node
+   */
+  async cancelDownload(nodeId: string, modelId: string): Promise<void> {
+    try {
+      const response = await fetch("/download/cancel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          targetNodeId: nodeId,
+          modelId: modelId,
+        }),
+      });
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(
+          `Failed to cancel download: ${response.status} - ${errorText}`,
+        );
+      }
+    } catch (error) {
+      console.error("Error cancelling download:", error);
+      throw error;
+    }
+  }
+
+  async createInstanceLink(
+    prefillInstances: string[],
+    decodeInstances: string[],
+  ): Promise<void> {
+    const response = await fetch("/v1/instance-links", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prefill_instances: prefillInstances,
+        decode_instances: decodeInstances,
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(
+        `Failed to create instance link: ${response.status} ${await response.text()}`,
+      );
+    }
+  }
+
+  async updateInstanceLink(
+    linkId: string,
+    prefillInstances: string[],
+    decodeInstances: string[],
+  ): Promise<void> {
+    const response = await fetch(
+      `/v1/instance-links/${encodeURIComponent(linkId)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prefill_instances: prefillInstances,
+          decode_instances: decodeInstances,
+        }),
+      },
+    );
+    if (!response.ok) {
+      throw new Error(
+        `Failed to update instance link: ${response.status} ${await response.text()}`,
+      );
+    }
+  }
+
+  async deleteInstanceLink(linkId: string): Promise<void> {
+    const response = await fetch(
+      `/v1/instance-links/${encodeURIComponent(linkId)}`,
+      { method: "DELETE" },
+    );
+    if (!response.ok) {
+      throw new Error(
+        `Failed to delete instance link: ${response.status} ${await response.text()}`,
+      );
+    }
+  }
+
+  /**
    * Delete a downloaded model from a specific node
    */
   async deleteDownload(nodeId: string, modelId: string): Promise<void> {
@@ -3026,6 +3452,23 @@ class AppStore {
   }
 
   /**
+   * Delete traces by task IDs
+   */
+  async deleteTraces(
+    taskIds: string[],
+  ): Promise<{ deleted: string[]; notFound: string[] }> {
+    const response = await fetch("/v1/traces/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ taskIds }),
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to delete traces: ${response.status}`);
+    }
+    return await response.json();
+  }
+
+  /**
    * Get the URL for the raw trace file (for Perfetto)
    */
   getTraceRawUrl(taskId: string): string {
@@ -3043,9 +3486,23 @@ export const isLoading = () => appStore.isLoading;
 export const ttftMs = () => appStore.ttftMs;
 export const tps = () => appStore.tps;
 export const totalTokens = () => appStore.totalTokens;
+export const prefillProgress = () => appStore.prefillProgress;
 export const topologyData = () => appStore.topologyData;
 export const instances = () => appStore.instances;
 export const runners = () => appStore.runners;
+export const instanceLinks = () => appStore.instanceLinks;
+export const featureFlags = () => appStore.featureFlags;
+export const createInstanceLink = (
+  prefillInstances: string[],
+  decodeInstances: string[],
+) => appStore.createInstanceLink(prefillInstances, decodeInstances);
+export const updateInstanceLink = (
+  linkId: string,
+  prefillInstances: string[],
+  decodeInstances: string[],
+) => appStore.updateInstanceLink(linkId, prefillInstances, decodeInstances);
+export const deleteInstanceLink = (linkId: string) =>
+  appStore.deleteInstanceLink(linkId);
 export const downloads = () => appStore.downloads;
 export const nodeDisk = () => appStore.nodeDisk;
 export const placementPreviews = () => appStore.placementPreviews;
@@ -3060,6 +3517,7 @@ export const topologyOnlyMode = () => appStore.getTopologyOnlyMode();
 export const chatSidebarVisible = () => appStore.getChatSidebarVisible();
 
 // Actions
+export const stopGeneration = () => appStore.stopGeneration();
 export const startChat = () => appStore.startChat();
 export const sendMessage = (
   content: string,
@@ -3069,6 +3527,7 @@ export const sendMessage = (
     type: string;
     textContent?: string;
     preview?: string;
+    pageImages?: string[];
   }[],
   enableThinking?: boolean | null,
 ) => appStore.sendMessage(content, files, enableThinking);
@@ -3130,7 +3589,22 @@ export const toggleChatSidebarVisible = () =>
   appStore.toggleChatSidebarVisible();
 export const setChatSidebarVisible = (visible: boolean) =>
   appStore.setChatSidebarVisible(visible);
+
+// Mobile sidebar state
+export const mobileChatSidebarOpen = () => appStore.mobileChatSidebarOpen;
+export const toggleMobileChatSidebar = () => appStore.toggleMobileChatSidebar();
+export const setMobileChatSidebarOpen = (open: boolean) =>
+  appStore.setMobileChatSidebarOpen(open);
+export const mobileRightSidebarOpen = () => appStore.mobileRightSidebarOpen;
+export const toggleMobileRightSidebar = () =>
+  appStore.toggleMobileRightSidebar();
+export const setMobileRightSidebarOpen = (open: boolean) =>
+  appStore.setMobileRightSidebarOpen(open);
+
 export const refreshState = () => appStore.fetchState();
+
+// Connection status
+export const isConnected = () => appStore.isConnected;
 
 // Node identities (for OS version mismatch detection)
 export const nodeIdentities = () => appStore.nodeIdentities;
@@ -3152,6 +3626,8 @@ export const resetImageGenerationParams = () =>
 // Download actions
 export const startDownload = (nodeId: string, shardMetadata: object) =>
   appStore.startDownload(nodeId, shardMetadata);
+export const cancelDownload = (nodeId: string, modelId: string) =>
+  appStore.cancelDownload(nodeId, modelId);
 export const deleteDownload = (nodeId: string, modelId: string) =>
   appStore.deleteDownload(nodeId, modelId);
 
@@ -3163,3 +3639,5 @@ export const fetchTraceStats = (taskId: string) =>
   appStore.fetchTraceStats(taskId);
 export const getTraceRawUrl = (taskId: string) =>
   appStore.getTraceRawUrl(taskId);
+export const deleteTraces = (taskIds: string[]) =>
+  appStore.deleteTraces(taskIds);

@@ -4,18 +4,22 @@ from datetime import datetime
 
 from loguru import logger
 
-from exo.shared.types.common import NodeId
+from exo.shared.models.model_cards import ModelCard
+from exo.shared.types.common import ModelId, NodeId
 from exo.shared.types.events import (
     ChunkGenerated,
+    CustomModelCardAdded,
+    CustomModelCardDeleted,
     Event,
     IndexedEvent,
     InputChunkReceived,
     InstanceCreated,
     InstanceDeleted,
+    InstanceLinkCreated,
+    InstanceLinkDeleted,
     NodeDownloadProgress,
     NodeGatheredInfo,
     NodeTimedOut,
-    RunnerDeleted,
     RunnerStatusUpdated,
     TaskAcknowledged,
     TaskCreated,
@@ -28,6 +32,7 @@ from exo.shared.types.events import (
     TracesCollected,
     TracesMerged,
 )
+from exo.shared.types.instance_link import InstanceLink, InstanceLinkId
 from exo.shared.types.profiling import (
     NodeIdentity,
     NodeNetworkInfo,
@@ -40,13 +45,19 @@ from exo.shared.types.tasks import Task, TaskId, TaskStatus
 from exo.shared.types.topology import Connection, RDMAConnection
 from exo.shared.types.worker.downloads import DownloadProgress
 from exo.shared.types.worker.instances import Instance, InstanceId
-from exo.shared.types.worker.runners import RunnerId, RunnerStatus
+from exo.shared.types.worker.runners import (
+    RunnerId,
+    RunnerReady,
+    RunnerShutdown,
+    RunnerStatus,
+)
 from exo.utils.info_gatherer.info_gatherer import (
     MacmonMetrics,
     MacThunderboltConnections,
     MacThunderboltIdentifiers,
     MemoryUsage,
     MiscData,
+    NodeBackends,
     NodeConfig,
     NodeDiskUsage,
     NodeNetworkInterfaces,
@@ -54,6 +65,18 @@ from exo.utils.info_gatherer.info_gatherer import (
     StaticNodeInformation,
     ThunderboltBridgeInfo,
 )
+
+
+def _is_rdma_ctl_enabled(
+    node_id: NodeId, node_rdma_ctl: Mapping[NodeId, NodeRdmaCtlStatus]
+) -> bool:
+    """A node is RDMA-capable only if rdma_ctl status has been observed as enabled.
+
+    Missing entries default to ``False`` — if we have not yet observed (or the node
+    cannot run) ``rdma_ctl``, it must not participate in an RDMA-backed instance.
+    """
+    status = node_rdma_ctl.get(node_id)
+    return status is not None and status.enabled
 
 
 def event_apply(event: Event, state: State) -> State:
@@ -68,6 +91,10 @@ def event_apply(event: Event, state: State) -> State:
             | TracesMerged()
         ):  # Pass-through events that don't modify state
             return state
+        case CustomModelCardAdded():
+            return apply_custom_model_card_added(event, state)
+        case CustomModelCardDeleted():
+            return apply_custom_model_card_deleted(event, state)
         case InstanceCreated():
             return apply_instance_created(event, state)
         case InstanceDeleted():
@@ -78,8 +105,6 @@ def event_apply(event: Event, state: State) -> State:
             return apply_node_download_progress(event, state)
         case NodeGatheredInfo():
             return apply_node_gathered_info(event, state)
-        case RunnerDeleted():
-            return apply_runner_deleted(event, state)
         case RunnerStatusUpdated():
             return apply_runner_status_updated(event, state)
         case TaskCreated():
@@ -94,6 +119,10 @@ def event_apply(event: Event, state: State) -> State:
             return apply_topology_edge_created(event, state)
         case TopologyEdgeDeleted():
             return apply_topology_edge_deleted(event, state)
+        case InstanceLinkCreated():
+            return apply_instance_link_created(event, state)
+        case InstanceLinkDeleted():
+            return apply_instance_link_deleted(event, state)
 
 
 def apply(state: State, event: IndexedEvent) -> State:
@@ -118,7 +147,13 @@ def apply_node_download_progress(event: NodeDownloadProgress, state: State) -> S
 
     replaced = False
     for i, existing_dp in enumerate(current):
-        if existing_dp.shard_metadata == dp.shard_metadata:
+        # TODO(ciaran): deduplicate by model_id for now. Will need to use
+        # shard_metadata again when pipeline and tensor downloads differ.
+        # For now this is fine
+        if (
+            existing_dp.shard_metadata.model_card.model_id
+            == dp.shard_metadata.model_card.model_id
+        ):
             current[i] = dp
             replaced = True
             break
@@ -187,25 +222,67 @@ def apply_instance_deleted(event: InstanceDeleted, state: State) -> State:
     new_instances: Mapping[InstanceId, Instance] = {
         iid: inst for iid, inst in state.instances.items() if iid != event.instance_id
     }
-    return state.model_copy(update={"instances": new_instances})
+    new_links: dict[InstanceLinkId, InstanceLink] = {}
+    for link_id, link in state.instance_links.items():
+        prefill = [i for i in link.prefill_instances if i != event.instance_id]
+        decode = [i for i in link.decode_instances if i != event.instance_id]
+        if not prefill or not decode:
+            continue
+        if prefill == list(link.prefill_instances) and decode == list(
+            link.decode_instances
+        ):
+            new_links[link_id] = link
+        else:
+            new_links[link_id] = link.model_copy(
+                update={"prefill_instances": prefill, "decode_instances": decode}
+            )
+    return state.model_copy(
+        update={"instances": new_instances, "instance_links": new_links}
+    )
+
+
+def apply_instance_link_created(event: InstanceLinkCreated, state: State) -> State:
+    new_links: Mapping[InstanceLinkId, InstanceLink] = {
+        **state.instance_links,
+        event.link.link_id: event.link,
+    }
+    return state.model_copy(update={"instance_links": new_links})
+
+
+def apply_instance_link_deleted(event: InstanceLinkDeleted, state: State) -> State:
+    new_links: Mapping[InstanceLinkId, InstanceLink] = {
+        lid: link for lid, link in state.instance_links.items() if lid != event.link_id
+    }
+    return state.model_copy(update={"instance_links": new_links})
 
 
 def apply_runner_status_updated(event: RunnerStatusUpdated, state: State) -> State:
-    new_runners: Mapping[RunnerId, RunnerStatus] = {
+    if isinstance(event.runner_status, RunnerShutdown):
+        new_runners: Mapping[RunnerId, RunnerStatus] = {
+            rid: rs for rid, rs in state.runners.items() if rid != event.runner_id
+        }
+        new_ports: Mapping[RunnerId, int] = {
+            rid: p
+            for rid, p in state.prefill_server_ports.items()
+            if rid != event.runner_id
+        }
+        return state.model_copy(
+            update={"runners": new_runners, "prefill_server_ports": new_ports}
+        )
+    new_runners = {
         **state.runners,
         event.runner_id: event.runner_status,
     }
-    return state.model_copy(update={"runners": new_runners})
-
-
-def apply_runner_deleted(event: RunnerDeleted, state: State) -> State:
-    assert event.runner_id in state.runners, (
-        "RunnerDeleted before any RunnerStatusUpdated events"
-    )
-    new_runners: Mapping[RunnerId, RunnerStatus] = {
-        rid: rs for rid, rs in state.runners.items() if rid != event.runner_id
-    }
-    return state.model_copy(update={"runners": new_runners})
+    update: dict[str, object] = {"runners": new_runners}
+    if (
+        isinstance(event.runner_status, RunnerReady)
+        and event.runner_status.prefill_server_port is not None
+    ):
+        update["prefill_server_ports"] = {
+            **state.prefill_server_ports,
+            event.runner_id: event.runner_status.prefill_server_port,
+        }
+    return state.model_copy(update=update)
 
 
 def apply_node_timed_out(event: NodeTimedOut, state: State) -> State:
@@ -336,6 +413,9 @@ def apply_node_gathered_info(event: NodeGatheredInfo, state: State) -> State:
                 for nid in state.node_thunderbolt
                 for tb_ident in state.node_thunderbolt[nid].interfaces
             }
+            source_is_rdma_enabled = _is_rdma_ctl_enabled(
+                event.node_id, state.node_rdma_ctl
+            )
             as_rdma_conns = [
                 Connection(
                     source=event.node_id,
@@ -348,6 +428,10 @@ def apply_node_gathered_info(event: NodeGatheredInfo, state: State) -> State:
                 for tb_conn in info.conns
                 if tb_conn.source_uuid in conn_map
                 if tb_conn.sink_uuid in conn_map
+                if source_is_rdma_enabled
+                and _is_rdma_ctl_enabled(
+                    conn_map[tb_conn.sink_uuid][0], state.node_rdma_ctl
+                )
             ]
             topology.replace_all_out_rdma_connections(event.node_id, as_rdma_conns)
         case ThunderboltBridgeInfo():
@@ -371,6 +455,17 @@ def apply_node_gathered_info(event: NodeGatheredInfo, state: State) -> State:
                 **state.node_rdma_ctl,
                 event.node_id: NodeRdmaCtlStatus(enabled=info.enabled),
             }
+            # If RDMA just got disabled on this node, drop any RDMA edges touching it
+            # so placement / topology consumers cannot pick a disabled node for an
+            # RDMA-backed instance. (Edges will repopulate on the next
+            # MacThunderboltConnections poll once both endpoints are enabled again.)
+            if not info.enabled:
+                topology.remove_all_rdma_connections_touching(event.node_id)
+        case NodeBackends():
+            update["node_backends"] = {
+                **state.node_backends,
+                event.node_id: info.backends,
+            }
 
     return state.model_copy(update=update)
 
@@ -386,3 +481,22 @@ def apply_topology_edge_deleted(event: TopologyEdgeDeleted, state: State) -> Sta
     topology.remove_connection(event.conn)
     # TODO: Clean up removing the reverse connection
     return state.model_copy(update={"topology": topology})
+
+
+def apply_custom_model_card_added(event: CustomModelCardAdded, state: State) -> State:
+    new_cards: Mapping[ModelId, ModelCard] = {
+        **state.custom_model_cards,
+        event.model_card.model_id: event.model_card,
+    }
+    return state.model_copy(update={"custom_model_cards": new_cards})
+
+
+def apply_custom_model_card_deleted(
+    event: CustomModelCardDeleted, state: State
+) -> State:
+    new_cards: Mapping[ModelId, ModelCard] = {
+        model_id: card
+        for model_id, card in state.custom_model_cards.items()
+        if model_id != event.model_id
+    }
+    return state.model_copy(update={"custom_model_cards": new_cards})

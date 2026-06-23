@@ -10,14 +10,15 @@ from typing import Any, cast
 import mlx.core as mx
 import mlx.nn as nn
 
-from exo.shared.constants import EXO_MODELS_DIR
+from exo.shared.constants import EXO_DEFAULT_MODELS_DIR
 from exo.shared.models.model_cards import ModelCard, ModelTask
+from exo.shared.types.backends import Backend
 from exo.shared.types.common import ModelId
 from exo.shared.types.memory import Memory
 from exo.shared.types.text_generation import InputMessage, TextGenerationTaskParams
 from exo.shared.types.worker.shards import PipelineShardMetadata, TensorShardMetadata
-from exo.worker.engines.mlx import Model
 from exo.worker.engines.mlx.generator.generate import mlx_generate
+from exo.worker.engines.mlx.types import Model
 from exo.worker.engines.mlx.utils_mlx import apply_chat_template, shard_and_load
 
 
@@ -52,7 +53,7 @@ def create_hostfile(world_size: int, base_port: int) -> tuple[str, list[str]]:
 # Use GPT OSS 20b to test as it is a model with a lot of strange behaviour
 
 DEFAULT_GPT_OSS_CONFIG = PipelineTestConfig(
-    model_path=EXO_MODELS_DIR / "mlx-community--gpt-oss-20b-MXFP4-Q8",
+    model_path=EXO_DEFAULT_MODELS_DIR / "mlx-community--gpt-oss-20b-MXFP4-Q8",
     total_layers=24,
     base_port=29600,
     max_tokens=200,
@@ -88,6 +89,7 @@ def run_gpt_oss_pipeline_device(
                 hidden_size=2880,
                 supports_tensor=False,
                 tasks=[ModelTask.TextGeneration],
+                backends=[Backend.MlxMetal],
             ),
             device_rank=rank,
             world_size=world_size,
@@ -96,7 +98,12 @@ def run_gpt_oss_pipeline_device(
             n_layers=24,
         )
 
-        model, tokenizer = shard_and_load(shard_meta, group)
+        gen = shard_and_load(shard_meta, group)
+        try:
+            while True:
+                next(gen)
+        except StopIteration as stop:
+            model, tokenizer = stop.value
         model = cast(Model, model)
 
         # Generate a prompt of exact token length
@@ -164,6 +171,7 @@ def run_gpt_oss_tensor_parallel_device(
                 hidden_size=2880,
                 supports_tensor=True,
                 tasks=[ModelTask.TextGeneration],
+                backends=[Backend.MlxMetal],
             ),
             device_rank=rank,
             world_size=world_size,
@@ -172,7 +180,12 @@ def run_gpt_oss_tensor_parallel_device(
             n_layers=24,
         )
 
-        model, tokenizer = shard_and_load(shard_meta, group)
+        gen = shard_and_load(shard_meta, group)
+        try:
+            while True:
+                next(gen)
+        except StopIteration as stop:
+            model, tokenizer = stop.value
         model = cast(Model, model)
 
         base_text = "The quick brown fox jumps over the lazy dog. "

@@ -22,19 +22,24 @@ import contextlib
 import itertools
 import json
 import sys
+import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from statistics import mean
 from typing import Any
 
-from harness import (
-    ExoClient,
-    ExoHttpError,
+from exo_tools.client import ExoClient, ExoHttpError
+from exo_tools.harness import (
     add_common_instance_args,
+    capture_cluster_snapshot,
+    find_existing_instance,
     instance_id_from_instance,
+    node_ids_from_instance,
     nodes_used_in_instance,
     resolve_model_short_id,
+    run_planning_phase,
     settle_and_fetch_placements,
     wait_for_instance_gone,
     wait_for_instance_ready,
@@ -74,7 +79,7 @@ def load_tokenizer_for_bench(model_id: str) -> Any:
         model_path = Path(
             snapshot_download(
                 model_id,
-                allow_patterns=["*.json", "*.py", "*.tiktoken"],
+                allow_patterns=["*.json", "*.py", "*.tiktoken", "*.model", "*.jinja"],
             )
         )
 
@@ -117,8 +122,48 @@ def load_tokenizer_for_bench(model_id: str) -> Any:
 
         return hf_tokenizer
 
-    # Default: use AutoTokenizer
-    return AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+    # TODO: Change back to using only transformers
+    try:
+        return AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+    except (AttributeError, ValueError):
+        from huggingface_hub import snapshot_download
+        from transformers import PretrainedConfig
+
+        model_path = Path(
+            snapshot_download(
+                model_id,
+                allow_patterns=[
+                    "*.json",
+                    "*.py",
+                    "tokenizer.model",
+                    "*.tiktoken",
+                    "tiktoken.model",
+                    "*.txt",
+                    "*.jsonl",
+                    "*.jinja",
+                ],
+            )
+        )
+        stub_kwargs: dict[str, Any] = {}
+        config_file = model_path / "config.json"
+        if config_file.exists():
+            with open(config_file) as f:
+                raw = json.load(f)
+            for key in (
+                "model_type",
+                "max_position_embeddings",
+                "vocab_size",
+                "bos_token_id",
+                "eos_token_id",
+                "pad_token_id",
+            ):
+                if key in raw:
+                    stub_kwargs[key] = raw[key]
+        return AutoTokenizer.from_pretrained(
+            str(model_path),
+            config=PretrainedConfig(**stub_kwargs),
+            trust_remote_code=True,
+        )
 
 
 def format_peak_memory(b: float) -> str:
@@ -127,6 +172,91 @@ def format_peak_memory(b: float) -> str:
             return f"{b:.2f}{unit}"
         b /= 1024.0
     raise ValueError("You're using petabytes of memory. Something went wrong...")
+
+
+_SAMPLER_METRICS = ("gpuUsage", "temp", "sysPower", "pcpuUsage", "ecpuUsage")
+
+
+class SystemMetricsSampler:
+    def __init__(self, client: ExoClient, node_ids: list[str], interval_s: float = 1.0):
+        self._client = client
+        self._node_ids = node_ids
+        self._interval_s = interval_s
+        self._samples: dict[str, list[tuple[float, dict[str, float]]]] = {
+            nid: [] for nid in node_ids
+        }
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._poll_loop, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=5)
+
+    def _poll_loop(self) -> None:
+        while not self._stop.is_set():
+            t = time.monotonic()
+            for nid in self._node_ids:
+                try:
+                    data = self._client.get_node_system(nid)
+                    if data:
+                        self._samples[nid].append(
+                            (t, {k: data.get(k, 0.0) for k in _SAMPLER_METRICS})
+                        )
+                except Exception:
+                    pass
+            self._stop.wait(self._interval_s)
+
+    def energy_between(self, t0: float, t1: float) -> float:
+        total_joules = 0.0
+        for _nid, samples in self._samples.items():
+            window = [(t, s["sysPower"]) for t, s in samples if t0 <= t <= t1]
+            if len(window) >= 2:
+                for i in range(1, len(window)):
+                    dt = window[i][0] - window[i - 1][0]
+                    avg_power = (window[i][1] + window[i - 1][1]) / 2
+                    total_joules += avg_power * dt
+            elif len(window) == 1:
+                total_joules += window[0][1] * (t1 - t0)
+        return total_joules
+
+    def summarize(self) -> dict[str, dict[str, dict[str, float]]]:
+        result: dict[str, dict[str, dict[str, float]]] = {}
+        for nid, samples in self._samples.items():
+            if not samples:
+                continue
+            metrics: dict[str, dict[str, float]] = {}
+            for key in _SAMPLER_METRICS:
+                values = [s[key] for t, s in samples]
+                metrics[key] = {
+                    "min": round(min(values), 2),
+                    "max": round(max(values), 2),
+                    "mean": round(mean(values), 2),
+                    "samples": len(values),
+                }
+            result[nid] = metrics
+        return result
+
+    def print_summary(self, placement_label: str) -> None:
+        summary = self.summarize()
+        if not summary:
+            return
+        logger.info(f"--- System Metrics ({placement_label}) ---")
+        for nid, metrics in summary.items():
+            gpu = metrics.get("gpuUsage", {})
+            temp = metrics.get("temp", {})
+            power = metrics.get("sysPower", {})
+            logger.info(
+                f"  {nid}:  "
+                f"GPU {gpu.get('mean', 0) * 100:.0f}% avg ({gpu.get('min', 0) * 100:.0f}–{gpu.get('max', 0) * 100:.0f}%)  |  "
+                f"{temp.get('mean', 0):.1f}°C avg  |  "
+                f"{power.get('mean', 0):.1f}W avg"
+            )
 
 
 def parse_int_list(values: list[str]) -> list[int]:
@@ -140,32 +270,87 @@ def parse_int_list(values: list[str]) -> list[int]:
 
 
 def run_one_completion(
-    client: ExoClient, model_id: str, pp_hint: int, tg: int, prompt_sizer: PromptSizer
+    client: ExoClient,
+    model_id: str,
+    pp_hint: int,
+    tg: int,
+    prompt_sizer: PromptSizer,
+    *,
+    use_prefix_cache: bool = False,
+    stream: bool = False,
 ) -> tuple[dict[str, Any], int]:
     content, pp_tokens = prompt_sizer.build(pp_hint)
     payload: dict[str, Any] = {
         "model": model_id,
         "messages": [{"role": "user", "content": content}],
-        "stream": False,
         "max_tokens": tg,
+        "logprobs": False,
+        "use_prefix_cache": use_prefix_cache,
     }
 
-    t0 = time.perf_counter()
-    out = client.post_bench_chat_completions(payload)
-    elapsed = time.perf_counter() - t0
+    if not stream:
+        payload["stream"] = False
+        t0 = time.perf_counter()
+        out = client.post_bench_chat_completions(payload)
+        elapsed = time.perf_counter() - t0
 
-    stats = out.get("generation_stats")
+        stats = out.get("generation_stats")
+        power_usage = out.get("power_usage")
+        choices = out.get("choices") or [{}]
+        message = choices[0].get("message", {}) if choices else {}
+        content = message.get("content") or ""
+        preview = content[:200] if content else ""
+    else:
+        tokens = 0
+        first_token_time = None
+        t0 = time.perf_counter()
+        text_parts: list[str] = []
+        stats = None
 
-    # Extract preview, handling None content (common for thinking models)
-    choices = out.get("choices") or [{}]
-    message = choices[0].get("message", {}) if choices else {}
-    content = message.get("content") or ""
-    preview = content[:200] if content else ""
+        for raw_line in client.stream_bench_chat_completions(payload):
+            line = raw_line.strip()
+            if line.startswith(": generation_stats "):
+                with contextlib.suppress(json.JSONDecodeError):
+                    stats = json.loads(line[len(": generation_stats ") :])
+                continue
+            if not line.startswith("data: "):
+                continue
+            data = line[6:]
+            if data == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data)
+                delta = chunk.get("choices", [{}])[0].get("delta", {})
+                if delta.get("content"):
+                    if first_token_time is None:
+                        first_token_time = time.perf_counter()
+                    tokens += 1
+                    text_parts.append(delta["content"])
+            except json.JSONDecodeError:
+                pass
+
+        elapsed = time.perf_counter() - t0
+        preview = "".join(text_parts)[:200]
+        power_usage = None
+
+        if not stats:
+            ttft = (first_token_time - t0) if first_token_time else elapsed
+            gen_time = elapsed - ttft if tokens > 1 else elapsed
+            gen_tps = (tokens - 1) / gen_time if tokens > 1 and gen_time > 0 else 0.0
+            prompt_tps = pp_tokens / ttft if ttft > 0 else 0.0
+            stats = {
+                "prompt_tokens": pp_tokens,
+                "generation_tokens": tokens,
+                "prompt_tps": round(prompt_tps, 2),
+                "generation_tps": round(gen_tps, 2),
+                "peak_memory_usage": {"inBytes": 0},
+            }
 
     return {
         "elapsed_s": elapsed,
         "output_text_preview": preview,
         "stats": stats,
+        "power_usage": power_usage,
     }, pp_tokens
 
 
@@ -180,9 +365,19 @@ class PromptSizer:
     def _make_counter(tokenizer: Any) -> Callable[[str], int]:
         def count_fn(user_content: str) -> int:
             messages = [{"role": "user", "content": user_content}]
-            ids = tokenizer.apply_chat_template(
-                messages, tokenize=True, add_generation_prompt=True
-            )
+            try:
+                ids = tokenizer.apply_chat_template(
+                    messages, tokenize=True, add_generation_prompt=True
+                )
+            except ValueError:
+                # Models without a Jinja chat template (e.g. DeepSeek V4 which
+                # ships its own Python encoder). Use the exo-side V4 encoder.
+                from exo.worker.engines.mlx.deepseek_v4_encoding import (
+                    encode_messages as encode_v4,
+                )
+
+                prompt = encode_v4(messages, thinking_mode="thinking")
+                ids = tokenizer.encode(prompt, add_special_tokens=False)
             # Fix for transformers 5.x
             if hasattr(ids, "input_ids"):
                 ids = ids.input_ids
@@ -252,6 +447,12 @@ def main() -> int:
         "--repeat", type=int, default=1, help="Repetitions per (pp,tg) pair."
     )
     ap.add_argument(
+        "--concurrency",
+        nargs="+",
+        default=["1"],
+        help="Concurrency levels (ints). Accepts commas. E.g. --concurrency 1,2,4,8. Default 1.",
+    )
+    ap.add_argument(
         "--warmup",
         type=int,
         default=0,
@@ -271,6 +472,27 @@ def main() -> int:
         action="store_true",
         help="Force all pp×tg combinations (cartesian product) even when lists have equal length.",
     )
+    ap.add_argument(
+        "--stream",
+        action="store_true",
+        help="Use /bench/chat/completions with streaming SSE response (bench=True still applies: no EOS detection, no KV cache).",
+    )
+    ap.add_argument(
+        "--no-system-metrics",
+        action="store_true",
+        help="Disable GPU utilization, temperature, and power collection during inference.",
+    )
+    ap.add_argument(
+        "--metrics-interval",
+        type=float,
+        default=1.0,
+        help="System metrics polling interval in seconds (default: 1.0).",
+    )
+    ap.add_argument(
+        "--use-prefix-cache",
+        action="store_true",
+        help="Enable KV prefix cache during bench (default: disabled for cold-cache measurements).",
+    )
     args = ap.parse_args()
 
     pp_list = parse_int_list(args.pp)
@@ -281,6 +503,19 @@ def main() -> int:
     if args.repeat <= 0:
         logger.error("--repeat must be >= 1")
         return 2
+    concurrency_list = parse_int_list(args.concurrency)
+    if not concurrency_list or any(c <= 0 for c in concurrency_list):
+        logger.error("--concurrency values must be >= 1")
+        return 2
+
+    if args.use_prefix_cache:
+        logger.warning(
+            "--use-prefix-cache: prompt TPS will be approximate. See METHODOLOGY.md for details."
+        )
+        if pp_list != sorted(pp_list):
+            logger.warning(
+                "--pp values are not in ascending order: prompt TPS will be less accurate. Use ascending --pp for best results."
+            )
 
     # Log pairing mode
     use_combinations = args.all_combinations or len(pp_list) != len(tg_list)
@@ -292,7 +527,9 @@ def main() -> int:
         logger.info(f"pp/tg mode: tandem (zip) - {len(pp_list)} pairs")
 
     client = ExoClient(args.host, args.port, timeout_s=args.timeout)
-    short_id, full_model_id = resolve_model_short_id(client, args.model)
+    short_id, full_model_id = resolve_model_short_id(
+        client, args.model, force_download=args.force_download
+    )
 
     tokenizer = load_tokenizer_for_bench(full_model_id)
     if tokenizer is None:
@@ -305,64 +542,146 @@ def main() -> int:
         logger.error("[exo-bench] tokenizer usable but prompt sizing failed")
         raise
 
-    selected = settle_and_fetch_placements(
-        client, full_model_id, args, settle_timeout=args.settle_timeout
-    )
+    # Optionally reuse a running instance for this model
+    reused_instance_id: str | None = None
+    if args.reuse_instance:
+        existing = find_existing_instance(client, full_model_id)
+        if existing:
+            reused_instance_id = existing
+            logger.info(f"Reusing existing instance {reused_instance_id}")
+        else:
+            logger.warning(
+                "--reuse-instance: no existing instance found, creating a new one"
+            )
 
-    if not selected:
-        logger.error("No valid placements matched your filters.")
-        return 1
-
-    selected.sort(
-        key=lambda p: (
-            str(p.get("instance_meta", "")),
-            str(p.get("sharding", "")),
-            -nodes_used_in_instance(p["instance"]),
-        ),
-        reverse=True,
-    )
-
-    logger.debug(f"exo-bench model: short_id={short_id} full_id={full_model_id}")
-    logger.info(f"placements: {len(selected)}")
-    for p in selected:
-        logger.info(
-            f"  - {p['sharding']} / {p['instance_meta']} / nodes={nodes_used_in_instance(p['instance'])}"
+    if reused_instance_id is not None:
+        # Use the existing instance directly — skip placement iteration
+        selected = []
+        download_duration_s = None
+    else:
+        selected = settle_and_fetch_placements(
+            client, full_model_id, args, settle_timeout=args.settle_timeout
         )
 
-    if args.dry_run:
-        return 0
+        if not selected:
+            logger.error("No valid placements matched your filters.")
+            return 1
 
+        selected.sort(
+            key=lambda p: (
+                str(p.get("instance_meta", "")),
+                str(p.get("sharding", "")),
+                nodes_used_in_instance(p["instance"]),
+            ),
+            reverse=True,
+        )
+
+        logger.debug(f"exo-bench model: short_id={short_id} full_id={full_model_id}")
+        logger.info(f"placements: {len(selected)}")
+        for p in selected:
+            logger.info(
+                f"  - {p['sharding']} / {p['instance_meta']} / nodes={nodes_used_in_instance(p['instance'])}"
+            )
+
+        if args.dry_run:
+            return 0
+
+        settle_deadline = (
+            time.monotonic() + args.settle_timeout if args.settle_timeout > 0 else None
+        )
+
+        logger.info("Planning phase: checking downloads...")
+        download_duration_s = run_planning_phase(
+            client,
+            full_model_id,
+            selected[0],
+            args.danger_delete_downloads,
+            args.timeout,
+            settle_deadline,
+        )
+        if download_duration_s is not None:
+            logger.info(f"Download: {download_duration_s:.1f}s (freshly downloaded)")
+        else:
+            logger.info("Download: model already cached")
+
+    cluster_snapshot = capture_cluster_snapshot(client)
     all_rows: list[dict[str, Any]] = []
+    all_system_metrics: dict[str, dict[str, dict[str, float]]] = {}
+
+    # If reusing an existing instance, run a single benchmark pass against it
+    if reused_instance_id is not None:
+        selected = [None]
 
     for preview in selected:
-        instance = preview["instance"]
-        instance_id = instance_id_from_instance(instance)
+        created_instance = False
+        if preview is not None:
+            instance = preview["instance"]
+            instance_id = instance_id_from_instance(instance)
 
-        sharding = str(preview["sharding"])
-        instance_meta = str(preview["instance_meta"])
-        n_nodes = nodes_used_in_instance(instance)
+            sharding = str(preview["sharding"])
+            instance_meta = str(preview["instance_meta"])
+            n_nodes = nodes_used_in_instance(instance)
 
-        logger.info("=" * 80)
-        logger.info(
-            f"PLACEMENT: {sharding} / {instance_meta} / nodes={n_nodes} / instance_id={instance_id}"
-        )
+            logger.info("=" * 80)
+            logger.info(
+                f"PLACEMENT: {sharding} / {instance_meta} / nodes={n_nodes} / instance_id={instance_id}"
+            )
 
-        client.request_json("POST", "/instance", body={"instance": instance})
-        try:
-            wait_for_instance_ready(client, instance_id)
-        except (RuntimeError, TimeoutError) as e:
-            logger.error(f"Failed to initialize placement: {e}")
-            with contextlib.suppress(ExoHttpError):
-                client.request_json("DELETE", f"/instance/{instance_id}")
-            continue
+            # Delete any existing instances to free resources before placing
+            try:
+                state = client.request_json("GET", "/state")
+                for old_id in list(state.get("instances", {}).keys()):
+                    logger.info(f"Deleting stale instance {old_id}")
+                    with contextlib.suppress(ExoHttpError):
+                        client.request_json("DELETE", f"/instance/{old_id}")
+                if state.get("instances"):
+                    time.sleep(2)
+            except Exception as e:
+                logger.warning(f"Failed to clean up stale instances: {e}")
 
-        time.sleep(1)
+            client.request_json("POST", "/instance", body={"instance": instance})
+            try:
+                wait_for_instance_ready(client, instance_id)
+            except (RuntimeError, TimeoutError) as e:
+                logger.error(f"Failed to initialize placement: {e}")
+                with contextlib.suppress(ExoHttpError):
+                    client.request_json("DELETE", f"/instance/{instance_id}")
+                continue
+
+            time.sleep(1)
+            created_instance = True
+        else:
+            instance_id = reused_instance_id
+            sharding = "reused"
+            instance_meta = "reused"
+            n_nodes = 0
+            logger.info("=" * 80)
+            logger.info(f"Using existing instance {instance_id}")
+
+        sampler: SystemMetricsSampler | None = None
+        if not args.no_system_metrics and preview is not None:
+            nids = node_ids_from_instance(instance)
+            sampler = SystemMetricsSampler(
+                ExoClient(args.host, args.port, timeout_s=30),
+                nids,
+                interval_s=args.metrics_interval,
+            )
+            sampler.start()
+
+        def _do_one(c: ExoClient, pp: int, tg: int) -> tuple[dict[str, Any], int]:
+            return run_one_completion(
+                c,
+                full_model_id,
+                pp,
+                tg,
+                prompt_sizer,
+                use_prefix_cache=args.use_prefix_cache,
+                stream=args.stream,
+            )
 
         try:
             for i in range(args.warmup):
-                run_one_completion(
-                    client, full_model_id, pp_list[0], tg_list[0], prompt_sizer
-                )
+                _do_one(client, pp_list[0], tg_list[0])
                 logger.debug(f"  warmup {i + 1}/{args.warmup} done")
 
             # If pp and tg lists have same length, run in tandem (zip)
@@ -373,63 +692,241 @@ def main() -> int:
                 pp_tg_pairs = list(zip(pp_list, tg_list, strict=True))
 
             for pp, tg in pp_tg_pairs:
-                runs: list[dict[str, Any]] = []
-                for r in range(args.repeat):
-                    time.sleep(3)
-                    try:
-                        row, actual_pp_tokens = run_one_completion(
-                            client, full_model_id, pp, tg, prompt_sizer
+                for concurrency in concurrency_list:
+                    logger.info(f"--- pp={pp} tg={tg} concurrency={concurrency} ---")
+                    runs: list[dict[str, Any]] = []
+                    inference_windows: list[tuple[float, float]] = []
+                    for r in range(args.repeat):
+                        time.sleep(3)
+
+                        if concurrency <= 1:
+                            # Sequential: single request
+                            try:
+                                inf_t0 = time.monotonic()
+                                row, actual_pp_tokens = _do_one(client, pp, tg)
+                                inference_windows.append((inf_t0, time.monotonic()))
+                            except Exception as e:
+                                logger.error(e)
+                                continue
+                            row.update(
+                                {
+                                    "model_short_id": short_id,
+                                    "model_id": full_model_id,
+                                    "placement_sharding": sharding,
+                                    "placement_instance_meta": instance_meta,
+                                    "placement_nodes": n_nodes,
+                                    "instance_id": instance_id,
+                                    "pp_tokens": actual_pp_tokens,
+                                    "tg": tg,
+                                    "repeat_index": r,
+                                    "concurrency": 1,
+                                    **(
+                                        {"download_duration_s": download_duration_s}
+                                        if download_duration_s is not None
+                                        else {}
+                                    ),
+                                }
+                            )
+                            runs.append(row)
+                            all_rows.append(row)
+                        else:
+                            # Concurrent: fire N requests in parallel
+                            # Pre-build prompt once, barrier ensures simultaneous dispatch
+                            content, actual_pp = prompt_sizer.build(pp)
+                            pre_built_payload: dict[str, Any] = {
+                                "model": full_model_id,
+                                "messages": [{"role": "user", "content": content}],
+                                "stream": False,
+                                "max_tokens": tg,
+                                "logprobs": False,
+                                "use_prefix_cache": args.use_prefix_cache,
+                            }
+                            barrier = threading.Barrier(concurrency)
+                            batch_start = threading.Event()
+                            batch_t0: float = 0.0
+                            batch_results: list[tuple[dict[str, Any], int]] = []
+                            batch_errors = 0
+
+                            def _run_concurrent(
+                                idx: int,
+                                _barrier: threading.Barrier = barrier,
+                                _batch_start: threading.Event = batch_start,
+                                _payload: dict[str, Any] = pre_built_payload,
+                                _actual_pp: int = actual_pp,
+                            ) -> tuple[dict[str, Any], int]:
+                                nonlocal batch_t0
+                                c = ExoClient(
+                                    args.host, args.port, timeout_s=args.timeout
+                                )
+                                if _barrier.wait() == 0:
+                                    batch_t0 = time.perf_counter()
+                                    _batch_start.set()
+                                else:
+                                    _batch_start.wait()
+                                t0 = batch_t0
+                                out = c.post_bench_chat_completions(_payload)
+                                elapsed = time.perf_counter() - t0
+                                stats = out.get("generation_stats")
+                                power_usage = out.get("power_usage")
+                                choices = out.get("choices") or [{}]
+                                message = (
+                                    choices[0].get("message", {}) if choices else {}
+                                )
+                                text = message.get("content") or ""
+                                return {
+                                    "elapsed_s": elapsed,
+                                    "output_text_preview": text[:200],
+                                    "stats": stats,
+                                    "power_usage": power_usage,
+                                }, _actual_pp
+
+                            inf_t0 = time.monotonic()
+                            with ThreadPoolExecutor(max_workers=concurrency) as pool:
+                                futures = {
+                                    pool.submit(_run_concurrent, i): i
+                                    for i in range(concurrency)
+                                }
+                                for fut in as_completed(futures):
+                                    try:
+                                        batch_results.append(fut.result())
+                                    except Exception as e:
+                                        logger.error(f"Concurrent request failed: {e}")
+                                        batch_errors += 1
+                            batch_wall_s = (
+                                max(x["elapsed_s"] for x, _ in batch_results)
+                                if batch_results
+                                else time.perf_counter() - batch_t0
+                            )
+                            inference_windows.append((inf_t0, time.monotonic()))
+
+                            for idx, (row, actual_pp_tokens) in enumerate(
+                                batch_results
+                            ):
+                                row.update(
+                                    {
+                                        "model_short_id": short_id,
+                                        "model_id": full_model_id,
+                                        "placement_sharding": sharding,
+                                        "placement_instance_meta": instance_meta,
+                                        "placement_nodes": n_nodes,
+                                        "instance_id": instance_id,
+                                        "pp_tokens": actual_pp_tokens,
+                                        "tg": tg,
+                                        "repeat_index": r,
+                                        "concurrency": concurrency,
+                                        "concurrent_index": idx,
+                                        **(
+                                            {"download_duration_s": download_duration_s}
+                                            if download_duration_s is not None
+                                            else {}
+                                        ),
+                                    }
+                                )
+                                runs.append(row)
+                                all_rows.append(row)
+
+                            if batch_results:
+                                valid_gen_tps = [
+                                    x["stats"]["generation_tps"]
+                                    for x, _ in batch_results
+                                    if x["stats"]["generation_tps"] > 0
+                                ]
+                                per_req_tps = (
+                                    max(valid_gen_tps) if valid_gen_tps else 0.0
+                                )
+                                agg_gen_tps = per_req_tps * concurrency
+                                logger.info(
+                                    f"[concurrent {concurrency}x]  "
+                                    f"agg_gen_tps={agg_gen_tps:.2f}  "
+                                    f"per_req_tps={per_req_tps:.2f}  "
+                                    f"wall_s={batch_wall_s:.2f}  "
+                                    f"errors={batch_errors}"
+                                )
+
+                    if runs:
+                        prompt_tps = mean(x["stats"]["prompt_tps"] for x in runs)
+                        valid_gen = [
+                            x["stats"]["generation_tps"]
+                            for x in runs
+                            if x["stats"]["generation_tps"] > 0
+                        ]
+                        per_req_tps = max(valid_gen) if valid_gen else 0.0
+                        gen_tps = per_req_tps * concurrency
+                        ptok = mean(x["stats"]["prompt_tokens"] for x in runs)
+                        gtok = mean(x["stats"]["generation_tokens"] for x in runs)
+
+                        def _peak_bytes(s: dict[str, Any]) -> float:
+                            pm = s["peak_memory_usage"]
+                            return pm.get("inBytes") or pm.get("in_bytes", 0)
+
+                        peak = mean(_peak_bytes(x["stats"]) for x in runs)
+                        summary = (
+                            f"prompt_tps={prompt_tps:.2f} gen_tps={gen_tps:.2f}    "
+                            f"prompt_tokens={ptok} gen_tokens={gtok}    "
+                            f"peak_memory={format_peak_memory(peak)}"
                         )
-                    except Exception as e:
-                        logger.error(e)
-                        continue
-                    row.update(
-                        {
-                            "model_short_id": short_id,
-                            "model_id": full_model_id,
-                            "placement_sharding": sharding,
-                            "placement_instance_meta": instance_meta,
-                            "placement_nodes": n_nodes,
-                            "instance_id": instance_id,
-                            "pp_tokens": actual_pp_tokens,
-                            "tg": tg,
-                            "repeat_index": r,
-                        }
-                    )
-                    runs.append(row)
-                    all_rows.append(row)
+                        if sampler and inference_windows:
+                            joules = sum(
+                                sampler.energy_between(t0, t1)
+                                for t0, t1 in inference_windows
+                            )
+                            inf_seconds = sum(t1 - t0 for t0, t1 in inference_windows)
+                            avg_watts = joules / inf_seconds if inf_seconds > 0 else 0
+                            summary += f"    energy={joules:.1f}J ({avg_watts:.1f}W avg over {inf_seconds:.1f}s inference)"
 
-                if runs:
-                    prompt_tps = mean(x["stats"]["prompt_tps"] for x in runs)
-                    gen_tps = mean(x["stats"]["generation_tps"] for x in runs)
-                    ptok = mean(x["stats"]["prompt_tokens"] for x in runs)
-                    gtok = mean(x["stats"]["generation_tokens"] for x in runs)
-                    peak = mean(
-                        x["stats"]["peak_memory_usage"]["inBytes"] for x in runs
-                    )
-
-                    logger.info(
-                        f"prompt_tps={prompt_tps:.2f} gen_tps={gen_tps:.2f}    "
-                        f"prompt_tokens={ptok} gen_tokens={gtok}    "
-                        f"peak_memory={format_peak_memory(peak)}\n"
-                    )
-                time.sleep(2)
+                        # mean() not sum() across concurrent runs: each
+                        # request's PowerSampler observes the same shared
+                        # cluster state, so they all report the same figure.
+                        prefill_energies = [
+                            (x.get("power_usage") or {}).get("prefill_energy_joules")
+                            for x in runs
+                        ]
+                        gen_energies = [
+                            (x.get("power_usage") or {}).get("generation_energy_joules")
+                            for x in runs
+                        ]
+                        prefill_vals = [e for e in prefill_energies if e is not None]
+                        gen_vals = [e for e in gen_energies if e is not None]
+                        if prefill_vals and gen_vals:
+                            avg_pref = mean(prefill_vals)
+                            avg_gen = mean(gen_vals)
+                            summary += (
+                                f"    prefill_energy={avg_pref:.1f}J  "
+                                f"gen_energy={avg_gen:.1f}J"
+                            )
+                        logger.info(f"{summary}\n")
+                    time.sleep(2)
         finally:
-            try:
-                client.request_json("DELETE", f"/instance/{instance_id}")
-            except ExoHttpError as e:
-                if e.status != 404:
-                    raise
-            wait_for_instance_gone(client, instance_id)
-            logger.debug(f"Deleted instance {instance_id}")
+            if sampler:
+                sampler.stop()
+                placement_label = f"{sharding}/{instance_meta}/{n_nodes} nodes"
+                sampler.print_summary(placement_label)
+                placement_metrics = sampler.summarize()
+                if placement_metrics:
+                    all_system_metrics.update(placement_metrics)
 
-            time.sleep(5)
+            if created_instance and instance_id is not None:
+                try:
+                    client.request_json("DELETE", f"/instance/{instance_id}")
+                except ExoHttpError as e:
+                    if e.status != 404:
+                        raise
+                wait_for_instance_gone(client, instance_id)
+                logger.debug(f"Deleted instance {instance_id}")
+
+                time.sleep(5)
+
+    output: dict[str, Any] = {"runs": all_rows}
+    if cluster_snapshot:
+        output["cluster"] = cluster_snapshot
+    if all_system_metrics:
+        output["system_metrics"] = all_system_metrics
 
     if args.stdout:
-        json.dump(all_rows, sys.stdout, indent=2, ensure_ascii=False)
+        json.dump(output, sys.stdout, indent=2, ensure_ascii=False)
     elif args.json_out:
         with open(args.json_out, "w", encoding="utf-8") as f:
-            json.dump(all_rows, f, indent=2, ensure_ascii=False)
+            json.dump(output, f, indent=2, ensure_ascii=False)
         logger.debug(f"\nWrote results JSON: {args.json_out}")
 
     return 0

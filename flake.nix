@@ -2,7 +2,7 @@
   description = "The development environment for Exo";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
 
     flake-parts = {
       url = "github:hercules-ci/flake-parts";
@@ -46,17 +46,18 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
-    # Pinned nixpkgs for swift-format (swift is broken on x86_64-linux in newer nixpkgs)
-    nixpkgs-swift.url = "github:NixOS/nixpkgs/08dacfca559e1d7da38f3cf05f1f45ee9bfd213c";
+    nixglhost = {
+      url = "github:numtide/nix-gl-host";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   nixConfig = {
-    extra-trusted-public-keys = "exo.cachix.org-1:okq7hl624TBeAR3kV+g39dUFSiaZgLRkLsFBCuJ2NZI=";
-    extra-substituters = "https://exo.cachix.org";
+    extra-trusted-public-keys = "exo.cachix.org-1:okq7hl624TBeAR3kV+g39dUFSiaZgLRkLsFBCuJ2NZI= cache.nixos-cuda.org:74DUi4Ye579gUqzH4ziL9IyiJBlDpMRn9MBN8oNan9M=";
+    extra-substituters = "https://exo.cachix.org https://cache.nixos-cuda.org";
   };
 
-  outputs =
-    inputs:
+  outputs = inputs:
     inputs.flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [
         "x86_64-linux"
@@ -71,21 +72,37 @@
         ./python/parts.nix
       ];
 
-      perSystem =
-        { config, self', inputs', pkgs, lib, system, ... }:
+      debug = true; # Enable options autocompletion
+
+      perSystem = { config, self', pkgs, lib, system, ... }:
         let
-          fenixToolchain = inputs'.fenix.packages.complete;
-          # Use pinned nixpkgs for swift-format (swift is broken on x86_64-linux in newer nixpkgs)
-          pkgsSwift = import inputs.nixpkgs-swift { inherit system; };
-        in
-        {
-          # Allow unfree for metal-toolchain (needed for Darwin Metal packages)
-          _module.args.pkgs = import inputs.nixpkgs {
+          pkgsArgs = {
             inherit system;
             config.allowUnfreePredicate = pkg: (pkg.pname or "") == "metal-toolchain";
             overlays = [
+              inputs.nixglhost.overlays.default
               (import ./nix/apple-sdk-overlay.nix)
+              (final: _: {
+                macmon = final.rustPlatform.buildRustPackage {
+                  pname = "macmon";
+                  version = "git";
+                  src = final.fetchFromGitHub {
+                    owner = "vladkens";
+                    repo = "macmon";
+                    rev = "a1cd06b6cc0d5e61db24fd8832e74cd992097a7d";
+                    hash = "sha256-wcq4PUXK44XfUKOZKl32u8LpOxXpSbUUfItQGwS2Zso=";
+                  };
+                  cargoHash = "sha256-Epj3L+db1flGNK5y6yfSig8piEiXTz15lPo/FNkqlkA=";
+                };
+              })
             ];
+          };
+        in
+        {
+          # Allow unfree for metal-toolchain (needed for Darwin Metal packages)
+          _module.args = {
+            pkgs = import inputs.nixpkgs pkgsArgs;
+            unfreePkgs = import inputs.nixpkgs (pkgsArgs // { config.allowUnfree = true; });
           };
           treefmt = {
             projectRootFile = "flake.nix";
@@ -93,7 +110,7 @@
               nixpkgs-fmt.enable = true;
               ruff-format = {
                 enable = true;
-                excludes = [ "rust/exo_pyo3_bindings/exo_pyo3_bindings.pyi" ];
+                excludes = [ "rust/exo_rs/exo_rs.pyi" ];
               };
               rustfmt = {
                 enable = true;
@@ -106,27 +123,19 @@
               };
               swift-format = {
                 enable = true;
-                package = pkgsSwift.swiftPackages.swift-format;
+                package = pkgs.swiftPackages.swift-format;
               };
               shfmt.enable = true;
+              taplo.enable = true;
             };
           };
 
-          packages = lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin (
-            let
-              uvLock = builtins.fromTOML (builtins.readFile ./uv.lock);
-              mlxPackage = builtins.head (builtins.filter (p: p.name == "mlx" && p.source ? git) uvLock.package);
-              uvLockMlxVersion = mlxPackage.version;
-            in
-            {
-              metal-toolchain = pkgs.callPackage ./nix/metal-toolchain.nix { };
-              mlx = pkgs.callPackage ./nix/mlx.nix {
-                inherit (self'.packages) metal-toolchain;
-                inherit uvLockMlxVersion;
-              };
-              default = self'.packages.exo;
-            }
-          );
+          packages = {
+            default = self'.packages.exo;
+          } //
+          lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin {
+            metal-toolchain = pkgs.callPackage ./nix/metal-toolchain.nix { };
+          };
 
           devShells.default = with pkgs; pkgs.mkShell {
             inputsFrom = [ self'.checks.cargo-build ];
@@ -137,16 +146,15 @@
                 config.treefmt.build.wrapper
 
                 # PYTHON
-                python313
+                self'.packages.exo.passthru.evenv
                 uv
-                ruff
-                basedpyright
 
                 # RUST
                 config.rust.toolchain
                 maturin
 
                 # NIX
+                nixd
                 nixpkgs-fmt
 
                 # SVELTE
@@ -155,9 +163,6 @@
                 # MISC
                 just
                 jq
-              ]
-              ++ lib.optionals stdenv.isLinux [
-                unixtools.ifconfig
               ]
               ++ lib.optionals stdenv.isDarwin [
                 macmon

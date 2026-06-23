@@ -15,14 +15,14 @@ struct ContentView: View {
     @EnvironmentObject private var localNetworkChecker: LocalNetworkChecker
     @EnvironmentObject private var updater: SparkleUpdater
     @EnvironmentObject private var thunderboltBridgeService: ThunderboltBridgeService
+    @EnvironmentObject private var settingsWindowController: SettingsWindowController
+    @EnvironmentObject private var bugReportWindowController: BugReportWindowController
     @State private var focusedNode: NodeViewModel?
     @State private var deletingInstanceIDs: Set<String> = []
     @State private var showAllNodes = false
     @State private var showAllInstances = false
+    @State private var baseURLCopied = false
     @State private var showAdvanced = false
-    @State private var showDebugInfo = false
-    @State private var bugReportInFlight = false
-    @State private var bugReportMessage: String?
     @State private var uninstallInProgress = false
     @State private var pendingNamespace: String = ""
     @State private var pendingHFToken: String = ""
@@ -258,139 +258,86 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 0) {
             if controller.status != .stopped {
                 dashboardButton
+                baseURLRow
                 Divider()
                     .padding(.vertical, 8)
             } else {
                 Divider()
                     .padding(.vertical, 4)
             }
-            advancedSection
-                .padding(.bottom, 8)
-            controlButton(title: "Quit", tint: .secondary) {
+            HoverButton(
+                title: "Settings",
+                tint: .primary,
+                trailingSystemImage: "gear"
+            ) {
+                settingsWindowController.open(
+                    controller: controller,
+                    updater: updater,
+                    networkStatusService: networkStatusService,
+                    thunderboltBridgeService: thunderboltBridgeService,
+                    stateService: stateService
+                )
+            }
+            HoverButton(
+                title: "Check for Updates",
+                tint: .primary,
+                trailingSystemImage: "arrow.triangle.2.circlepath"
+            ) {
+                updater.checkForUpdates()
+            }
+            HoverButton(
+                title: "Share Bug Report…",
+                tint: .primary,
+                trailingSystemImage: "ladybug"
+            ) {
+                bugReportWindowController.open()
+            }
+            .padding(.bottom, 8)
+            HoverButton(title: "Quit", tint: .secondary) {
                 controller.stop()
                 NSApplication.shared.terminate(nil)
             }
         }
     }
 
-    private var advancedSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("Advanced")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                Spacer()
-                collapseButton(isExpanded: $showAdvanced)
-            }
-            .animation(nil, value: showAdvanced)
-            if showAdvanced {
-                VStack(alignment: .leading, spacing: 8) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Cluster Namespace")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                        HStack {
-                            TextField("optional", text: $pendingNamespace)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.caption2)
-                                .onAppear {
-                                    pendingNamespace = controller.customNamespace
-                                }
-                            Button("Save & Restart") {
-                                controller.customNamespace = pendingNamespace
-                                if controller.status == .running || controller.status == .starting {
-                                    controller.restart()
-                                }
-                            }
-                            .font(.caption2)
-                            .disabled(pendingNamespace == controller.customNamespace)
-                        }
-                    }
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("HuggingFace Token")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                        HStack {
-                            SecureField("optional", text: $pendingHFToken)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.caption2)
-                                .onAppear {
-                                    pendingHFToken = controller.hfToken
-                                }
-                            Button("Save & Restart") {
-                                controller.hfToken = pendingHFToken
-                                if controller.status == .running || controller.status == .starting {
-                                    controller.restart()
-                                }
-                            }
-                            .font(.caption2)
-                            .disabled(pendingHFToken == controller.hfToken)
-                        }
-                    }
-                    Divider()
-                    HStack {
-                        Toggle(
-                            "Enable Image Models (experimental)", isOn: $pendingEnableImageModels
-                        )
-                        .toggleStyle(.switch)
-                        .font(.caption2)
-                        .onAppear {
-                            pendingEnableImageModels = controller.enableImageModels
-                        }
-
-                        Spacer()
-
-                        Button("Save & Restart") {
-                            controller.enableImageModels = pendingEnableImageModels
-                            if controller.status == .running || controller.status == .starting {
-                                controller.restart()
-                            }
-                        }
-                        .font(.caption2)
-                        .disabled(pendingEnableImageModels == controller.enableImageModels)
-                    }
-                    HoverButton(title: "Check for Updates", small: true) {
-                        updater.checkForUpdates()
-                    }
-                    debugSection
-                    HoverButton(title: "Uninstall", tint: .red, small: true) {
-                        showUninstallConfirmationAlert()
-                    }
-                    .disabled(uninstallInProgress)
-                }
-                .transition(.opacity)
-            }
-        }
-        .animation(.easeInOut(duration: 0.25), value: showAdvanced)
-    }
-
-    private func controlButton(title: String, tint: Color = .primary, action: @escaping () -> Void)
-        -> some View
-    {
-        HoverButton(title: title, tint: tint, trailingSystemImage: nil, action: action)
-    }
-
     private var dashboardButton: some View {
-        Button {
+        HoverButton(
+            title: "Web Dashboard",
+            tint: .primary,
+            trailingSystemImage: "arrow.up.right"
+        ) {
             guard let url = URL(string: "http://localhost:52415/") else { return }
             NSWorkspace.shared.open(url)
-        } label: {
-            HStack {
-                Image(systemName: "arrow.up.right.square")
-                    .imageScale(.small)
-                Text("Dashboard")
-                    .fontWeight(.medium)
-                Spacer()
-            }
-            .padding(.vertical, 8)
-            .padding(.horizontal, 10)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color(red: 1.0, green: 0.87, blue: 0.0).opacity(0.2))
-            )
         }
-        .buttonStyle(.plain)
-        .padding(.bottom, 4)
+    }
+
+    private var baseURLRow: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "link")
+                .imageScale(.small)
+                .foregroundColor(.secondary)
+            Text("localhost:52415/v1")
+                .font(.system(.caption, design: .monospaced))
+                .foregroundColor(.primary)
+            Spacer()
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString("http://localhost:52415/v1", forType: .string)
+                baseURLCopied = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                    baseURLCopied = false
+                }
+            } label: {
+                Image(systemName: baseURLCopied ? "checkmark" : "doc.on.doc")
+                    .imageScale(.small)
+                    .foregroundColor(baseURLCopied ? .green : .secondary)
+                    .contentTransition(.symbolEffect(.replace))
+            }
+            .buttonStyle(.plain)
+            .help("Copy API base URL")
+        }
+        .padding(.vertical, 4)
+        .padding(.horizontal, 8)
     }
 
     private func collapseButton(isExpanded: Binding<Bool>) -> some View {
@@ -528,40 +475,6 @@ struct ContentView: View {
         }
     }
 
-    private var debugSection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HoverButton(
-                title: "Debug Info",
-                tint: .primary,
-                trailingSystemImage: showDebugInfo ? "chevron.up" : "chevron.down",
-                small: true
-            ) {
-                showDebugInfo.toggle()
-            }
-            if showDebugInfo {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Version: \(buildTag)")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                    Text("Commit: \(buildCommit)")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                    Text(thunderboltStatusText)
-                        .font(.caption2)
-                        .foregroundColor(thunderboltStatusColor)
-                    clusterThunderboltBridgeView
-                    interfaceIpList
-                    rdmaStatusView
-                    sendBugReportButton
-                        .padding(.top, 6)
-                }
-                .padding(.leading, 8)
-                .transition(.opacity)
-            }
-        }
-        .animation(.easeInOut(duration: 0.25), value: showDebugInfo)
-    }
-
     private var rdmaStatusView: some View {
         let rdmaStatuses = stateService.latestSnapshot?.nodeRdmaCtl ?? [:]
         let localNodeId = stateService.localNodeId
@@ -610,42 +523,6 @@ struct ContentView: View {
         }
     }
 
-    private var sendBugReportButton: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Button {
-                Task {
-                    await sendBugReport()
-                }
-            } label: {
-                HStack {
-                    if bugReportInFlight {
-                        ProgressView()
-                            .scaleEffect(0.6)
-                    }
-                    Text("Send Bug Report")
-                        .font(.caption)
-                        .fontWeight(.semibold)
-                    Spacer()
-                }
-                .padding(.vertical, 6)
-                .padding(.horizontal, 8)
-                .background(
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(Color.accentColor.opacity(0.12))
-                )
-            }
-            .buttonStyle(.plain)
-            .disabled(bugReportInFlight)
-
-            if let message = bugReportMessage {
-                Text(message)
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
     private var processToggleBinding: Binding<Bool> {
         Binding(
             get: {
@@ -684,19 +561,6 @@ struct ContentView: View {
                 }
             }
         )
-    }
-
-    private func sendBugReport() async {
-        bugReportInFlight = true
-        bugReportMessage = "Collecting logs..."
-        let service = BugReportService()
-        do {
-            let outcome = try await service.sendReport(isManual: true)
-            bugReportMessage = outcome.message
-        } catch {
-            bugReportMessage = error.localizedDescription
-        }
-        bugReportInFlight = false
     }
 
     private func showUninstallConfirmationAlert() {
@@ -781,13 +645,6 @@ struct ContentView: View {
         }
     }
 
-    private var buildTag: String {
-        Bundle.main.infoDictionary?["EXOBuildTag"] as? String ?? "unknown"
-    }
-
-    private var buildCommit: String {
-        Bundle.main.infoDictionary?["EXOBuildCommit"] as? String ?? "unknown"
-    }
 }
 
 private struct HoverButton: View {

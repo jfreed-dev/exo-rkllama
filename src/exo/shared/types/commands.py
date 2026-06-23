@@ -1,16 +1,17 @@
 from pydantic import Field
 
-from exo.shared.models.model_cards import ModelCard, ModelId
-from exo.shared.types.api import (
+from exo.api.types import (
     ImageEditsTaskParams,
     ImageGenerationTaskParams,
 )
+from exo.shared.models.model_cards import ModelCard, ModelId
 from exo.shared.types.chunks import InputImageChunk
-from exo.shared.types.common import CommandId, NodeId
+from exo.shared.types.common import CommandId, NodeId, SystemId
+from exo.shared.types.instance_link import InstanceLinkId
 from exo.shared.types.text_generation import TextGenerationTaskParams
 from exo.shared.types.worker.instances import Instance, InstanceId, InstanceMeta
 from exo.shared.types.worker.shards import Sharding, ShardMetadata
-from exo.utils.pydantic_ext import CamelCaseModel, TaggedModel
+from exo.utils.pydantic_ext import FrozenModel, TaggedModel
 
 
 class BaseCommand(TaggedModel):
@@ -81,6 +82,24 @@ class CancelDownload(BaseCommand):
     model_id: ModelId
 
 
+class AddCustomModelCard(BaseCommand):
+    model_card: ModelCard
+
+
+class DeleteCustomModelCard(BaseCommand):
+    model_id: ModelId
+
+
+class SetInstanceLink(BaseCommand):
+    link_id: InstanceLinkId
+    prefill_instances: list[InstanceId]
+    decode_instances: list[InstanceId]
+
+
+class DeleteInstanceLink(BaseCommand):
+    link_id: InstanceLinkId
+
+
 DownloadCommand = StartDownload | DeleteDownload | CancelDownload
 
 
@@ -96,14 +115,18 @@ Command = (
     | TaskCancelled
     | TaskFinished
     | SendInputChunk
+    | AddCustomModelCard
+    | DeleteCustomModelCard
+    | SetInstanceLink
+    | DeleteInstanceLink
 )
 
 
-class ForwarderCommand(CamelCaseModel):
-    origin: NodeId
+class ForwarderCommand(FrozenModel):
+    origin: SystemId
     command: Command
 
 
-class ForwarderDownloadCommand(CamelCaseModel):
-    origin: NodeId
+class ForwarderDownloadCommand(FrozenModel):
+    origin: SystemId
     command: DownloadCommand

@@ -1,7 +1,7 @@
 from collections.abc import Generator
 from typing import Any, Literal
 
-from exo.shared.types.api import (
+from exo.api.types import (
     FinishReason,
     GenerationStats,
     ImageGenerationStats,
@@ -16,10 +16,6 @@ class BaseRunnerResponse(TaggedModel):
     pass
 
 
-class TokenizedResponse(BaseRunnerResponse):
-    prompt_tokens: int
-
-
 class GenerationResponse(BaseRunnerResponse):
     text: str
     token: int
@@ -28,6 +24,7 @@ class GenerationResponse(BaseRunnerResponse):
     finish_reason: FinishReason | None = None
     stats: GenerationStats | None = None
     usage: Usage | None
+    is_thinking: bool = False
 
 
 class ImageGenerationResponse(BaseRunnerResponse):
@@ -67,3 +64,17 @@ class ToolCallResponse(BaseRunnerResponse):
 
 class FinishedResponse(BaseRunnerResponse):
     pass
+
+
+class ModelLoadingResponse(BaseRunnerResponse):
+    layers_loaded: int
+    total: int
+
+
+class CancelledResponse(BaseRunnerResponse):
+    pass
+
+
+class PrefillProgressResponse(BaseRunnerResponse):
+    processed_tokens: int
+    total_tokens: int

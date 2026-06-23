@@ -3,23 +3,26 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import io
 import json
 import os
 import sys
 import time
 import tomllib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
 import httpx
-from harness import (
-    ExoClient,
-    ExoHttpError,
+from exo_tools.client import ExoClient, ExoHttpError
+from exo_tools.harness import (
     add_common_instance_args,
+    capture_cluster_snapshot,
     instance_id_from_instance,
     nodes_used_in_instance,
     resolve_model_short_id,
+    run_planning_phase,
     settle_and_fetch_placements,
     wait_for_instance_gone,
     wait_for_instance_ready,
@@ -38,6 +41,8 @@ class Scenario:
     expected_function: str | None = None
     required_arg_keys: list[str] | None = None
     tool_result: str | None = None
+    nested_array_key: str | None = None
+    required_item_keys: list[str] | None = None
 
 
 def load_scenarios(path: Path) -> list[Scenario]:
@@ -105,6 +110,8 @@ def load_scenarios(path: Path) -> list[Scenario]:
                 expected_function=s.get("expected_function"),
                 required_arg_keys=s.get("required_arg_keys"),
                 tool_result=tool_result,
+                nested_array_key=s.get("nested_array_key"),
+                required_item_keys=s.get("required_item_keys"),
             )
         )
 
@@ -147,6 +154,35 @@ def validate_args(args_str: str, required_keys: list[str]) -> tuple[bool, str | 
     return True, None
 
 
+def validate_nested_args(
+    args_str: str,
+    array_key: str,
+    required_item_keys: list[str],
+) -> tuple[bool, str | None]:
+    """Check that args[array_key] is a list of objects with required keys."""
+    try:
+        args = json.loads(args_str)
+    except (json.JSONDecodeError, TypeError) as exc:
+        return False, f"Invalid JSON: {exc}"
+    if not isinstance(args, dict):
+        return False, f"Expected dict, got {type(args).__name__}"
+    arr = args.get(array_key)
+    if not isinstance(arr, list):
+        return False, f"'{array_key}' is not an array (got {type(arr).__name__})"
+    if len(arr) == 0:
+        return False, f"'{array_key}' is empty"
+    for i, item in enumerate(arr):
+        if not isinstance(item, dict):
+            return (
+                False,
+                f"'{array_key}[{i}]' is not an object (got {type(item).__name__})",
+            )
+        missing = [k for k in required_item_keys if k not in item]
+        if missing:
+            return False, f"'{array_key}[{i}]' missing keys: {missing}"
+    return True, None
+
+
 def call_api(
     client: httpx.Client,
     host: str,
@@ -174,7 +210,7 @@ def _openai_build_request(
         "model": model,
         "messages": messages,
         "tools": tools,
-        "max_tokens": 16384,
+        "max_tokens": 4096,
         "temperature": 0.0,
     }
     return "/v1/chat/completions", body
@@ -241,7 +277,7 @@ def _openai_build_followup(
         "model": model,
         "messages": followup_messages,
         "tools": tools,
-        "max_tokens": 16384,
+        "max_tokens": 4096,
         "temperature": 0.0,
     }
     return "/v1/chat/completions", body
@@ -344,7 +380,7 @@ def _claude_build_request(
         "model": model,
         "messages": claude_messages,
         "tools": claude_tools,
-        "max_tokens": 16384,
+        "max_tokens": 4096,
         "temperature": 0.0,
     }
     if system_content is not None:
@@ -454,7 +490,7 @@ def _claude_build_followup(
         "model": model,
         "messages": claude_messages,
         "tools": claude_tools,
-        "max_tokens": 16384,
+        "max_tokens": 4096,
         "temperature": 0.0,
     }
     if system_content is not None:
@@ -699,6 +735,15 @@ def run_scenario(
                 checks["valid_arguments"] = ok
             else:
                 checks["valid_arguments"] = True
+            if scenario.nested_array_key and scenario.required_item_keys:
+                ok, nested_err = validate_nested_args(
+                    parsed.tool_call["arguments"],
+                    scenario.nested_array_key,
+                    scenario.required_item_keys,
+                )
+                checks["valid_nested_structure"] = ok
+                if not ok:
+                    args_err = nested_err
         else:
             checks["correct_function"] = False
             checks["valid_arguments"] = False
@@ -870,6 +915,12 @@ Examples:
         help="Repeat each scenario N times (default: 1)",
     )
     parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=1,
+        help="Run up to N scenarios in parallel against the same instance (default: 1)",
+    )
+    parser.add_argument(
         "--scenarios",
         nargs="*",
         help="Run only these scenarios (by name)",
@@ -890,6 +941,13 @@ Examples:
         help="Write JSON results to stdout instead of file",
     )
     args = parser.parse_args()
+
+    if args.concurrency < 1:
+        print(
+            f"--concurrency must be >= 1 (got {args.concurrency})",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     all_scenarios = load_scenarios(SCENARIOS_PATH)
     if args.scenarios:
@@ -920,6 +978,21 @@ Examples:
 
     selected.sort(key=_placement_sort_key)
     preview = selected[0]
+
+    settle_deadline = (
+        time.monotonic() + args.settle_timeout if args.settle_timeout > 0 else None
+    )
+
+    print("Planning phase: checking downloads...", file=log)
+    run_planning_phase(
+        exo,
+        full_model_id,
+        preview,
+        args.danger_delete_downloads,
+        args.timeout,
+        settle_deadline,
+    )
+
     instance = preview["instance"]
     instance_id = instance_id_from_instance(instance)
     sharding = str(preview["sharding"])
@@ -948,44 +1021,75 @@ Examples:
         sys.exit(1)
 
     time.sleep(1)
+    cluster_snapshot = capture_cluster_snapshot(exo)
     all_results: list[ScenarioResult] = []
+
+    tasks: list[tuple[int, Scenario, ApiName]] = [
+        (run_idx, scenario, api_name)
+        for run_idx in range(args.repeat)
+        for scenario in scenarios
+        for api_name in api_names
+    ]
+
+    def _run_one(
+        http_client: httpx.Client,
+        task: tuple[int, Scenario, ApiName],
+    ) -> tuple[tuple[int, Scenario, ApiName], list[ScenarioResult], str]:
+        run_idx, scenario, api_name = task
+        buf = io.StringIO()
+        run_tag = f"[run {run_idx + 1}/{args.repeat}]" if args.repeat > 1 else ""
+        print(
+            f"\n  {run_tag}[{api_name:>9}] {scenario.name}: {scenario.description}",
+            file=buf,
+        )
+        scenario_results = run_scenario(
+            http_client,
+            args.host,
+            args.port,
+            full_model_id,
+            scenario,
+            api_name,
+            args.timeout,
+            args.verbose,
+        )
+        for r in scenario_results:
+            status = "PASS" if r.passed else "FAIL"
+            print(
+                f"    [{r.phase:>10}] {status}  ({r.latency_ms:.0f}ms)",
+                file=buf,
+            )
+            for check_name, check_ok in r.checks.items():
+                mark = "+" if check_ok else "-"
+                print(f"      {mark} {check_name}", file=buf)
+            if r.error:
+                print(f"      ! {r.error}", file=buf)
+        return task, scenario_results, buf.getvalue()
 
     try:
         with httpx.Client() as http_client:
-            for run_idx in range(args.repeat):
-                if args.repeat > 1:
-                    print(f"\n--- Run {run_idx + 1}/{args.repeat} ---", file=log)
-
-                for scenario in scenarios:
-                    for api_name in api_names:
-                        print(
-                            f"\n  [{api_name:>9}] {scenario.name}: {scenario.description}",
-                            file=log,
-                        )
-
-                        scenario_results = run_scenario(
-                            http_client,
-                            args.host,
-                            args.port,
-                            full_model_id,
-                            scenario,
-                            api_name,
-                            args.timeout,
-                            args.verbose,
-                        )
+            if args.concurrency == 1:
+                current_run = -1
+                for task in tasks:
+                    run_idx = task[0]
+                    if args.repeat > 1 and run_idx != current_run:
+                        print(f"\n--- Run {run_idx + 1}/{args.repeat} ---", file=log)
+                        current_run = run_idx
+                    _, scenario_results, buffered = _run_one(http_client, task)
+                    all_results.extend(scenario_results)
+                    log.write(buffered)
+                    log.flush()
+            else:
+                print(
+                    f"Running {len(tasks)} tasks with concurrency={args.concurrency}",
+                    file=log,
+                )
+                with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
+                    futures = [pool.submit(_run_one, http_client, t) for t in tasks]
+                    for fut in as_completed(futures):
+                        _, scenario_results, buffered = fut.result()
                         all_results.extend(scenario_results)
-
-                        for r in scenario_results:
-                            status = "PASS" if r.passed else "FAIL"
-                            print(
-                                f"    [{r.phase:>10}] {status}  ({r.latency_ms:.0f}ms)",
-                                file=log,
-                            )
-                            for check_name, check_ok in r.checks.items():
-                                mark = "+" if check_ok else "-"
-                                print(f"      {mark} {check_name}", file=log)
-                            if r.error:
-                                print(f"      ! {r.error}", file=log)
+                        log.write(buffered)
+                        log.flush()
     finally:
         try:
             exo.request_json("DELETE", f"/instance/{instance_id}")
@@ -1026,16 +1130,19 @@ Examples:
                 print(f"  - {r.name} [{r.api}/{r.phase}]: {r.error}", file=log)
 
     json_results = [result_to_dict(r) for r in all_results]
+    output: dict[str, Any] = {"results": json_results}
+    if cluster_snapshot:
+        output["cluster"] = cluster_snapshot
 
     if args.stdout:
-        print(json.dumps(json_results, indent=2))
+        print(json.dumps(output, indent=2))
     else:
         json_path = args.json_out
         parent = os.path.dirname(json_path)
         if parent:
             os.makedirs(parent, exist_ok=True)
         with open(json_path, "w") as f:
-            json.dump(json_results, f, indent=2)
+            json.dump(output, f, indent=2)
             f.write("\n")
         print(f"\nJSON results written to {json_path}", file=log)
 

@@ -3,15 +3,17 @@ from typing import final
 
 from pydantic import Field
 
+from exo.shared.models.model_cards import ModelCard
 from exo.shared.topology import Connection
-from exo.shared.types.chunks import GenerationChunk, InputImageChunk
-from exo.shared.types.common import CommandId, Id, NodeId, SessionId
+from exo.shared.types.chunks import Chunk, InputImageChunk
+from exo.shared.types.common import CommandId, Id, ModelId, NodeId, SessionId, SystemId
+from exo.shared.types.instance_link import InstanceLink, InstanceLinkId
 from exo.shared.types.tasks import Task, TaskId, TaskStatus
 from exo.shared.types.worker.downloads import DownloadProgress
 from exo.shared.types.worker.instances import Instance, InstanceId
 from exo.shared.types.worker.runners import RunnerId, RunnerStatus
 from exo.utils.info_gatherer.info_gatherer import GatheredInfo
-from exo.utils.pydantic_ext import CamelCaseModel, FrozenModel, TaggedModel
+from exo.utils.pydantic_ext import FrozenModel, TaggedModel
 
 
 class EventId(Id):
@@ -73,10 +75,6 @@ class RunnerStatusUpdated(BaseEvent):
     runner_status: RunnerStatus
 
 
-class RunnerDeleted(BaseEvent):
-    runner_id: RunnerId
-
-
 class NodeTimedOut(BaseEvent):
     node_id: NodeId
 
@@ -94,7 +92,7 @@ class NodeDownloadProgress(BaseEvent):
 
 class ChunkGenerated(BaseEvent):
     command_id: CommandId
-    chunk: GenerationChunk
+    chunk: Chunk
 
 
 class InputChunkReceived(BaseEvent):
@@ -108,6 +106,14 @@ class TopologyEdgeCreated(BaseEvent):
 
 class TopologyEdgeDeleted(BaseEvent):
     conn: Connection
+
+
+class CustomModelCardAdded(BaseEvent):
+    model_card: ModelCard
+
+
+class CustomModelCardDeleted(BaseEvent):
+    model_id: ModelId
 
 
 @final
@@ -132,6 +138,14 @@ class TracesMerged(BaseEvent):
     traces: list[TraceEventData]
 
 
+class InstanceLinkCreated(BaseEvent):
+    link: InstanceLink
+
+
+class InstanceLinkDeleted(BaseEvent):
+    link_id: InstanceLinkId
+
+
 Event = (
     TestEvent
     | TaskCreated
@@ -142,7 +156,6 @@ Event = (
     | InstanceCreated
     | InstanceDeleted
     | RunnerStatusUpdated
-    | RunnerDeleted
     | NodeTimedOut
     | NodeGatheredInfo
     | NodeDownloadProgress
@@ -152,20 +165,33 @@ Event = (
     | TopologyEdgeDeleted
     | TracesCollected
     | TracesMerged
+    | CustomModelCardAdded
+    | CustomModelCardDeleted
+    | InstanceLinkCreated
+    | InstanceLinkDeleted
 )
 
 
-class IndexedEvent(CamelCaseModel):
+class IndexedEvent(FrozenModel):
     """An event indexed by the master, with a globally unique index"""
 
     idx: int = Field(ge=0)
     event: Event
 
 
-class ForwarderEvent(CamelCaseModel):
+class GlobalForwarderEvent(FrozenModel):
     """An event the forwarder will serialize and send over the network"""
 
     origin_idx: int = Field(ge=0)
     origin: NodeId
+    session: SessionId
+    event: Event
+
+
+class LocalForwarderEvent(FrozenModel):
+    """An event the forwarder will serialize and send over the network"""
+
+    origin_idx: int = Field(ge=0)
+    origin: SystemId
     session: SessionId
     event: Event

@@ -2,7 +2,7 @@ from enum import Enum
 
 from pydantic import Field
 
-from exo.shared.types.api import (
+from exo.api.types import (
     ImageEditsTaskParams,
     ImageGenerationTaskParams,
 )
@@ -16,6 +16,9 @@ from exo.utils.pydantic_ext import TaggedModel
 
 class TaskId(Id):
     pass
+
+
+CANCEL_ALL_TASKS = TaskId("CANCEL_ALL_TASKS")
 
 
 class TaskStatus(str, Enum):
@@ -98,3 +101,6 @@ Task = (
     | ImageEdits
     | Shutdown
 )
+TextTask = TextGeneration
+ImageTask = ImageGeneration | ImageEdits
+GenerationTask = TextTask | ImageTask

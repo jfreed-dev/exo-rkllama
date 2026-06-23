@@ -9,6 +9,7 @@
     refreshState,
     lastUpdate as lastUpdateStore,
     startDownload,
+    cancelDownload,
     deleteDownload,
   } from "$lib/stores/app.svelte";
   import {
@@ -29,7 +30,12 @@
         etaMs: number;
         modelDirectory?: string;
       }
-    | { kind: "pending"; modelDirectory?: string }
+    | {
+        kind: "pending";
+        downloaded: number;
+        total: number;
+        modelDirectory?: string;
+      }
     | { kind: "failed"; modelDirectory?: string }
     | { kind: "not_present" };
 
@@ -74,7 +80,6 @@
     if (typeof value === "number") return value;
     if (value && typeof value === "object") {
       const v = value as Record<string, unknown>;
-      if (typeof v.in_bytes === "number") return v.in_bytes;
       if (typeof v.inBytes === "number") return v.inBytes;
     }
     return 0;
@@ -231,23 +236,14 @@
             undefined;
           let cell: CellStatus;
           if (tag === "DownloadCompleted") {
-            const totalBytes = getBytes(
-              payload.total_bytes ?? payload.totalBytes,
-            );
+            const totalBytes = getBytes(payload.total);
             cell = { kind: "completed", totalBytes, modelDirectory };
           } else if (tag === "DownloadOngoing") {
             const rawProgress =
               payload.download_progress ?? payload.downloadProgress ?? {};
             const prog = rawProgress as Record<string, unknown>;
-            const totalBytes = getBytes(
-              prog.total_bytes ??
-                prog.totalBytes ??
-                payload.total_bytes ??
-                payload.totalBytes,
-            );
-            const downloadedBytes = getBytes(
-              prog.downloaded_bytes ?? prog.downloadedBytes,
-            );
+            const totalBytes = getBytes(prog.total ?? payload.total);
+            const downloadedBytes = getBytes(prog.downloaded);
             const speed = (prog.speed as number) ?? 0;
             const etaMs =
               (prog.eta_ms as number) ?? (prog.etaMs as number) ?? 0;
@@ -265,7 +261,20 @@
           } else if (tag === "DownloadFailed") {
             cell = { kind: "failed", modelDirectory };
           } else {
-            cell = { kind: "pending", modelDirectory };
+            const downloaded = getBytes(
+              payload.downloaded ??
+                payload.downloaded_bytes ??
+                payload.downloadedBytes,
+            );
+            const total = getBytes(
+              payload.total ?? payload.total_bytes ?? payload.totalBytes,
+            );
+            cell = {
+              kind: "pending",
+              downloaded,
+              total,
+              modelDirectory,
+            };
           }
 
           const existing = row.cells[nodeId];
@@ -275,14 +284,51 @@
         }
       }
 
+      function rowSortKey(row: ModelRow): number {
+        // in progress (4) -> completed (3) -> paused (2) -> not started (1) -> not present (0)
+        let best = 0;
+        for (const cell of Object.values(row.cells)) {
+          let score = 0;
+          if (cell.kind === "downloading") score = 4;
+          else if (cell.kind === "completed") score = 3;
+          else if (cell.kind === "pending" && cell.downloaded > 0)
+            score = 2; // paused
+          else if (cell.kind === "pending" || cell.kind === "failed") score = 1; // not started
+          if (score > best) best = score;
+        }
+        return best;
+      }
+
+      function totalCompletedBytes(row: ModelRow): number {
+        let total = 0;
+        for (const cell of Object.values(row.cells)) {
+          if (cell.kind === "completed") total += cell.totalBytes;
+        }
+        return total;
+      }
+
       const rows = Array.from(rowMap.values()).sort((a, b) => {
-        const aCompleted = Object.values(a.cells).filter(
-          (c) => c.kind === "completed",
-        ).length;
-        const bCompleted = Object.values(b.cells).filter(
-          (c) => c.kind === "completed",
-        ).length;
-        if (aCompleted !== bCompleted) return bCompleted - aCompleted;
+        const aPriority = rowSortKey(a);
+        const bPriority = rowSortKey(b);
+        if (aPriority !== bPriority) return bPriority - aPriority;
+        // Within completed or paused, sort by biggest size first
+        if (aPriority === 3 && bPriority === 3) {
+          const sizeDiff = totalCompletedBytes(b) - totalCompletedBytes(a);
+          if (sizeDiff !== 0) return sizeDiff;
+        }
+        if (aPriority === 2 && bPriority === 2) {
+          const aSize = Math.max(
+            ...Object.values(a.cells).map((c) =>
+              c.kind === "pending" ? c.total : 0,
+            ),
+          );
+          const bSize = Math.max(
+            ...Object.values(b.cells).map((c) =>
+              c.kind === "pending" ? c.total : 0,
+            ),
+          );
+          if (aSize !== bSize) return bSize - aSize;
+        }
         return a.modelId.localeCompare(b.modelId);
       });
 
@@ -303,6 +349,59 @@
     refreshState();
   });
 </script>
+
+{#snippet trashIcon()}
+  <svg
+    class="w-5 h-5"
+    viewBox="0 0 20 20"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+  >
+    <path
+      d="M4 6h12M8 6V4h4v2m1 0v10a1 1 0 01-1 1H8a1 1 0 01-1-1V6h6"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    ></path>
+  </svg>
+{/snippet}
+
+{#snippet downloadIcon(size?: string)}
+  <svg
+    class={size ?? "w-5 h-5"}
+    viewBox="0 0 20 20"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+  >
+    <path
+      d="M10 3v10m0 0l-3-3m3 3l3-3M3 17h14"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    ></path>
+  </svg>
+{/snippet}
+
+{#snippet pauseIcon()}
+  <svg class="w-5 h-5" viewBox="0 0 20 20" fill="currentColor">
+    <path
+      fill-rule="evenodd"
+      d="M6 4h2v12H6V4zm6 0h2v12h-2V4z"
+      clip-rule="evenodd"
+    ></path>
+  </svg>
+{/snippet}
+
+{#snippet deleteButton(nodeId: string, modelId: string)}
+  <button
+    type="button"
+    class="text-white/50 hover:text-red-400 transition-colors cursor-pointer"
+    onclick={() => deleteDownload(nodeId, modelId)}
+    title="Delete from this node"
+  >
+    {@render trashIcon()}
+  </button>
+{/snippet}
 
 <div class="min-h-screen bg-exo-dark-gray text-white">
   <HeaderNav showHome={true} />
@@ -367,7 +466,7 @@
                   <div>{col.label}</div>
                   {#if col.diskAvailable != null}
                     <div
-                      class="text-[9px] text-exo-light-gray/60 normal-case tracking-normal mt-0.5"
+                      class="text-[9px] text-white/70 normal-case tracking-normal mt-0.5"
                     >
                       {formatBytes(col.diskAvailable)} free
                     </div>
@@ -391,7 +490,7 @@
                       </div>
                       {#if row.prettyName}
                         <div
-                          class="text-[10px] text-exo-light-gray/60"
+                          class="text-[10px] text-white/60"
                           title={row.modelId}
                         >
                           {row.modelId}
@@ -405,7 +504,7 @@
                       title="View model details"
                     >
                       <svg
-                        class="w-4 h-4 text-white/30 hover:text-white/60"
+                        class="w-4 h-4 text-white/60 hover:text-white/80"
                         viewBox="0 0 24 24"
                         fill="currentColor"
                       >
@@ -424,11 +523,11 @@
                   <td class="px-4 py-3 text-center align-middle">
                     {#if cell.kind === "completed"}
                       <div
-                        class="flex flex-col items-center gap-0.5"
+                        class="flex flex-col items-center gap-1"
                         title="Completed ({formatBytes(cell.totalBytes)})"
                       >
                         <svg
-                          class="w-5 h-5 text-green-400"
+                          class="w-7 h-7 text-green-400"
                           viewBox="0 0 20 20"
                           fill="currentColor"
                         >
@@ -438,30 +537,10 @@
                             clip-rule="evenodd"
                           ></path>
                         </svg>
-                        <span class="text-[10px] text-exo-light-gray/70"
+                        <span class="text-xs text-white/70"
                           >{formatBytes(cell.totalBytes)}</span
                         >
-                        <button
-                          type="button"
-                          class="text-exo-light-gray/40 hover:text-red-400 transition-colors mt-0.5"
-                          onclick={() =>
-                            deleteDownload(col.nodeId, row.modelId)}
-                          title="Delete from this node"
-                        >
-                          <svg
-                            class="w-3.5 h-3.5"
-                            viewBox="0 0 20 20"
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="2"
-                          >
-                            <path
-                              d="M4 6h12M8 6V4h4v2m1 0v10a1 1 0 01-1 1H8a1 1 0 01-1-1V6h6"
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
-                            ></path>
-                          </svg>
-                        </button>
+                        {@render deleteButton(col.nodeId, row.modelId)}
                       </div>
                     {:else if cell.kind === "downloading"}
                       <div
@@ -472,11 +551,11 @@
                           cell.speed,
                         )} - ETA {formatEta(cell.etaMs)}"
                       >
-                        <span class="text-exo-yellow text-xs font-medium"
+                        <span class="text-exo-yellow text-sm font-medium"
                           >{clampPercent(cell.percentage).toFixed(1)}%</span
                         >
                         <div
-                          class="w-14 h-1.5 bg-exo-black/60 rounded-sm overflow-hidden"
+                          class="w-16 h-2 bg-exo-black/60 rounded-sm overflow-hidden"
                         >
                           <div
                             class="h-full bg-gradient-to-r from-exo-yellow to-exo-yellow/70 transition-all duration-300"
@@ -485,24 +564,85 @@
                             ).toFixed(1)}%"
                           ></div>
                         </div>
-                        <span class="text-[9px] text-exo-light-gray/60"
+                        <span class="text-[10px] text-white/70"
                           >{formatSpeed(cell.speed)}</span
                         >
+                        <div class="flex gap-1 mt-0.5">
+                          <button
+                            type="button"
+                            class="text-white/50 hover:text-exo-yellow transition-colors cursor-pointer"
+                            onclick={() =>
+                              cancelDownload(col.nodeId, row.modelId)}
+                            title="Pause download"
+                          >
+                            {@render pauseIcon()}
+                          </button>
+                          {@render deleteButton(col.nodeId, row.modelId)}
+                        </div>
                       </div>
                     {:else if cell.kind === "pending"}
                       <div
-                        class="flex flex-col items-center gap-0.5"
-                        title="Download pending"
+                        class="flex flex-col items-center gap-1"
+                        title={cell.downloaded > 0
+                          ? `${formatBytes(cell.downloaded)} / ${formatBytes(cell.total)} downloaded (paused)`
+                          : "Download pending"}
                       >
-                        <span class="text-exo-light-gray/50 text-sm">...</span>
+                        {#if cell.downloaded > 0 && cell.total > 0}
+                          <span class="text-white/70 text-xs"
+                            >{formatBytes(cell.downloaded)} / {formatBytes(
+                              cell.total,
+                            )}</span
+                          >
+                          <div
+                            class="w-full h-1.5 bg-white/10 rounded-full overflow-hidden"
+                          >
+                            <div
+                              class="h-full bg-exo-light-gray/40 rounded-full"
+                              style="width: {(
+                                (cell.downloaded / cell.total) *
+                                100
+                              ).toFixed(1)}%"
+                            ></div>
+                          </div>
+                          <div class="flex gap-1">
+                            {#if row.shardMetadata}
+                              <button
+                                type="button"
+                                class="text-white/50 hover:text-exo-yellow transition-colors cursor-pointer"
+                                onclick={() =>
+                                  startDownload(col.nodeId, row.shardMetadata!)}
+                                title="Resume download on this node"
+                              >
+                                {@render downloadIcon()}
+                              </button>
+                            {:else}
+                              <span class="text-white/50 text-[10px]"
+                                >paused</span
+                              >
+                            {/if}
+                            {@render deleteButton(col.nodeId, row.modelId)}
+                          </div>
+                        {:else if row.shardMetadata}
+                          <button
+                            type="button"
+                            class="text-white/50 hover:text-exo-yellow transition-colors cursor-pointer"
+                            onclick={() =>
+                              startDownload(col.nodeId, row.shardMetadata!)}
+                            title="Start download on this node"
+                          >
+                            {@render downloadIcon("w-6 h-6")}
+                          </button>
+                        {:else}
+                          <span class="text-white/40 text-sm">...</span>
+                        {/if}
                       </div>
                     {:else if cell.kind === "failed"}
                       <div
-                        class="flex flex-col items-center gap-0.5"
+                        class="flex flex-col items-center gap-1"
                         title="Download failed"
                       >
                         <svg
-                          class="w-5 h-5 text-red-400"
+                          class="w-7 h-7 text-red-400"
                           viewBox="0 0 20 20"
                           fill="currentColor"
                         >
@@ -512,29 +652,20 @@
                             clip-rule="evenodd"
                           ></path>
                         </svg>
-                        {#if row.shardMetadata}
-                          <button
-                            type="button"
-                            class="text-exo-light-gray/40 hover:text-exo-yellow transition-colors"
-                            onclick={() =>
-                              startDownload(col.nodeId, row.shardMetadata!)}
-                            title="Retry download on this node"
-                          >
-                            <svg
-                              class="w-3.5 h-3.5"
-                              viewBox="0 0 20 20"
-                              fill="none"
-                              stroke="currentColor"
-                              stroke-width="2"
+                        <div class="flex gap-1">
+                          {#if row.shardMetadata}
+                            <button
+                              type="button"
+                              class="text-white/50 hover:text-exo-yellow transition-colors cursor-pointer"
+                              onclick={() =>
+                                startDownload(col.nodeId, row.shardMetadata!)}
+                              title="Retry download on this node"
                             >
-                              <path
-                                d="M10 3v10m0 0l-3-3m3 3l3-3M3 17h14"
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                              ></path>
-                            </svg>
-                          </button>
-                        {/if}
+                              {@render downloadIcon()}
+                            </button>
+                          {/if}
+                          {@render deleteButton(col.nodeId, row.modelId)}
+                        </div>
                       </div>
                     {:else}
                       <div
@@ -547,24 +678,12 @@
                         {#if row.shardMetadata}
                           <button
                             type="button"
-                            class="text-exo-light-gray/30 hover:text-exo-yellow transition-colors mt-0.5 opacity-0 group-hover:opacity-100"
+                            class="text-white/50 hover:text-exo-yellow transition-colors mt-0.5 opacity-0 group-hover:opacity-100 cursor-pointer"
                             onclick={() =>
                               startDownload(col.nodeId, row.shardMetadata!)}
                             title="Download to this node"
                           >
-                            <svg
-                              class="w-3.5 h-3.5"
-                              viewBox="0 0 20 20"
-                              fill="none"
-                              stroke="currentColor"
-                              stroke-width="2"
-                            >
-                              <path
-                                d="M10 3v10m0 0l-3-3m3 3l3-3M3 17h14"
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                              ></path>
-                            </svg>
+                            {@render downloadIcon()}
                           </button>
                         {/if}
                       </div>

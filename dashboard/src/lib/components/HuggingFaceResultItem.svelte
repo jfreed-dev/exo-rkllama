@@ -26,7 +26,8 @@
     downloadedOnNodes = [],
   }: HuggingFaceResultItemProps = $props();
 
-  function formatNumber(num: number): string {
+  function formatNumber(num: number | undefined): string {
+    if (num == null) return "0";
     if (num >= 1000000) {
       return `${(num / 1000000).toFixed(1)}M`;
     } else if (num >= 1000) {
@@ -35,8 +36,12 @@
     return num.toString();
   }
 
-  // Extract model name from full ID (e.g., "mlx-community/Llama-3.2-1B" -> "Llama-3.2-1B")
-  const modelName = $derived(model.id.split("/").pop() || model.id);
+  // Show short name for mlx-community models, full ID for everything else
+  const modelName = $derived(
+    model.author === "mlx-community"
+      ? model.id.split("/").pop() || model.id
+      : model.id,
+  );
 </script>
 
 <div

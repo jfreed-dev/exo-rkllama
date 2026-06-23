@@ -9,6 +9,7 @@ from exo.shared.types.worker.runners import (
     RunnerReady,
     RunnerStatus,
 )
+from exo.utils.keyed_backoff import KeyedBackoff
 from exo.worker.tests.constants import (
     INSTANCE_1_ID,
     MODEL_A_ID,
@@ -52,6 +53,10 @@ def test_plan_kills_runner_when_instance_missing():
         instances=instances,
         all_runners=all_runners,
         tasks={},
+        input_chunk_buffer={},
+        image_cache={},
+        instance_backoff=KeyedBackoff(),
+        download_backoff=KeyedBackoff(),
     )
 
     assert isinstance(result, Shutdown)
@@ -81,7 +86,7 @@ def test_plan_kills_runner_when_sibling_failed():
     instances = {INSTANCE_1_ID: instance}
     all_runners = {
         RUNNER_1_ID: RunnerReady(),
-        RUNNER_2_ID: RunnerFailed(error_message="boom"),
+        RUNNER_2_ID: RunnerFailed(error_message="boom", diagnostics=[]),
     }
 
     result = plan_mod.plan(
@@ -91,6 +96,10 @@ def test_plan_kills_runner_when_sibling_failed():
         instances=instances,
         all_runners=all_runners,
         tasks={},
+        input_chunk_buffer={},
+        image_cache={},
+        instance_backoff=KeyedBackoff(),
+        download_backoff=KeyedBackoff(),
     )
 
     assert isinstance(result, Shutdown)
@@ -122,6 +131,10 @@ def test_plan_creates_runner_when_missing_for_node():
         instances=instances,
         all_runners=all_runners,
         tasks={},
+        input_chunk_buffer={},
+        image_cache={},
+        instance_backoff=KeyedBackoff(),
+        download_backoff=KeyedBackoff(),
     )
 
     # We patched plan_mod.CreateRunner → CreateRunner
@@ -160,6 +173,10 @@ def test_plan_does_not_create_runner_when_supervisor_already_present():
         instances=instances,
         all_runners=all_runners,
         tasks={},
+        input_chunk_buffer={},
+        image_cache={},
+        instance_backoff=KeyedBackoff(),
+        download_backoff=KeyedBackoff(),
     )
 
     assert result is None
@@ -189,6 +206,10 @@ def test_plan_does_not_create_runner_for_unassigned_node():
         instances=instances,
         all_runners=all_runners,
         tasks={},
+        input_chunk_buffer={},
+        image_cache={},
+        instance_backoff=KeyedBackoff(),
+        download_backoff=KeyedBackoff(),
     )
 
     assert result is None

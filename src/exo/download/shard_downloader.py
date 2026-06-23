@@ -7,6 +7,7 @@ from typing import AsyncIterator, Callable
 
 from exo.download.download_utils import RepoDownloadProgress
 from exo.shared.models.model_cards import ModelCard, ModelId, ModelTask
+from exo.shared.types.backends import Backend
 from exo.shared.types.memory import Memory
 from exo.shared.types.worker.shards import (
     PipelineShardMetadata,
@@ -16,11 +17,6 @@ from exo.shared.types.worker.shards import (
 
 # TODO: the PipelineShardMetadata getting reinstantiated is a bit messy. Should this be a classmethod?
 class ShardDownloader(ABC):
-    internet_connection: bool = False
-
-    def set_internet_connection(self, value: bool) -> None:
-        self.internet_connection = value
-
     @abstractmethod
     async def ensure_shard(
         self, shard: ShardMetadata, config_only: bool = False
@@ -98,6 +94,7 @@ NOOP_DOWNLOAD_PROGRESS = RepoDownloadProgress(
             hidden_size=1,
             supports_tensor=False,
             tasks=[ModelTask.TextGeneration],
+            backends=[Backend.MlxMetal],
         ),
         device_rank=0,
         world_size=1,
@@ -107,9 +104,9 @@ NOOP_DOWNLOAD_PROGRESS = RepoDownloadProgress(
     ),
     completed_files=0,
     total_files=0,
-    downloaded_bytes=Memory.from_bytes(0),
-    downloaded_bytes_this_session=Memory.from_bytes(0),
-    total_bytes=Memory.from_bytes(0),
+    downloaded=Memory.from_bytes(0),
+    downloaded_this_session=Memory.from_bytes(0),
+    total=Memory.from_bytes(0),
     overall_speed=0,
     overall_eta=timedelta(seconds=0),
     status="complete",

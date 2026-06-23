@@ -1,10 +1,8 @@
 from datetime import datetime, timedelta, timezone
 
 import anyio
-from anyio.abc import TaskGroup
 from loguru import logger
 
-from exo.master.event_log import DiskEventLog
 from exo.master.placement import (
     add_instance_to_placements,
     cancel_unnecessary_downloads,
@@ -12,11 +10,19 @@ from exo.master.placement import (
     get_transition_events,
     place_instance,
 )
+from exo.master.placement_utils import find_ip_prioritised
+from exo.routing.event_router import (
+    EventRouterBrokenResourceError,
+    EventRouterClosedResourceError,
+)
 from exo.shared.apply import apply
 from exo.shared.constants import EXO_EVENT_LOG_DIR, EXO_TRACING_ENABLED
 from exo.shared.types.commands import (
+    AddCustomModelCard,
     CreateInstance,
+    DeleteCustomModelCard,
     DeleteInstance,
+    DeleteInstanceLink,
     ForwarderCommand,
     ForwarderDownloadCommand,
     ImageEdits,
@@ -24,18 +30,24 @@ from exo.shared.types.commands import (
     PlaceInstance,
     RequestEventLog,
     SendInputChunk,
+    SetInstanceLink,
     TaskCancelled,
     TaskFinished,
     TestCommand,
     TextGeneration,
 )
-from exo.shared.types.common import CommandId, NodeId, SessionId
+from exo.shared.types.common import CommandId, NodeId, SessionId, SystemId
 from exo.shared.types.events import (
+    CustomModelCardAdded,
+    CustomModelCardDeleted,
     Event,
-    ForwarderEvent,
+    GlobalForwarderEvent,
     IndexedEvent,
     InputChunkReceived,
     InstanceDeleted,
+    InstanceLinkCreated,
+    InstanceLinkDeleted,
+    LocalForwarderEvent,
     NodeGatheredInfo,
     NodeTimedOut,
     TaskCreated,
@@ -45,6 +57,7 @@ from exo.shared.types.events import (
     TracesCollected,
     TracesMerged,
 )
+from exo.shared.types.instance_link import InstanceLink
 from exo.shared.types.state import State
 from exo.shared.types.tasks import (
     ImageEdits as ImageEditsTask,
@@ -60,8 +73,50 @@ from exo.shared.types.tasks import (
     TextGeneration as TextGenerationTask,
 )
 from exo.shared.types.worker.instances import InstanceId
-from exo.utils.channels import Receiver, Sender, channel
+from exo.utils.channels import Receiver, Sender
+from exo.utils.disk_event_log import DiskEventLog
 from exo.utils.event_buffer import MultiSourceBuffer
+from exo.utils.task_group import TaskGroup
+
+
+def _prefill_endpoint_for(state: State, decode_instance_id: InstanceId) -> str | None:
+    decode = state.instances.get(decode_instance_id)
+    if decode is None:
+        return None
+    decode_node = next(iter(decode.shard_assignments.node_to_runner.keys()), None)
+    if decode_node is None:
+        return None
+
+    sources: set[InstanceId] = set()
+    for link in state.instance_links.values():
+        if decode_instance_id in link.decode_instances:
+            sources.update(link.prefill_instances)
+    sources.discard(decode_instance_id)
+
+    in_flight = {TaskStatus.Pending, TaskStatus.Running}
+    task_counts: dict[InstanceId, int] = {
+        src_id: sum(
+            1
+            for task in state.tasks.values()
+            if task.instance_id == src_id and task.task_status in in_flight
+        )
+        for src_id in sources
+    }
+    for src_id in sorted(sources, key=lambda sid: task_counts[sid]):
+        instance = state.instances.get(src_id)
+        if instance is None:
+            continue
+        for node_id, runner_id in instance.shard_assignments.node_to_runner.items():
+            port = state.prefill_server_ports.get(runner_id)
+            if port is None:
+                continue
+            ip = find_ip_prioritised(
+                decode_node, node_id, state.topology, state.node_network, ring=True
+            )
+            if ip is None:
+                continue
+            return f"{ip}:{port}"
+    return None
 
 
 class Master:
@@ -71,26 +126,23 @@ class Master:
         session_id: SessionId,
         *,
         command_receiver: Receiver[ForwarderCommand],
-        local_event_receiver: Receiver[ForwarderEvent],
-        global_event_sender: Sender[ForwarderEvent],
+        event_sender: Sender[Event],
+        local_event_receiver: Receiver[LocalForwarderEvent],
+        global_event_sender: Sender[GlobalForwarderEvent],
         download_command_sender: Sender[ForwarderDownloadCommand],
     ):
-        self.state = State()
-        self._tg: TaskGroup = anyio.create_task_group()
         self.node_id = node_id
         self.session_id = session_id
+        self.state = State()
+        self._tg: TaskGroup = TaskGroup()
         self.command_task_mapping: dict[CommandId, TaskId] = {}
         self.command_receiver = command_receiver
         self.local_event_receiver = local_event_receiver
         self.global_event_sender = global_event_sender
         self.download_command_sender = download_command_sender
-        send, recv = channel[Event]()
-        self.event_sender: Sender[Event] = send
-        self._loopback_event_receiver: Receiver[Event] = recv
-        self._loopback_event_sender: Sender[ForwarderEvent] = (
-            local_event_receiver.clone_sender()
-        )
-        self._multi_buffer = MultiSourceBuffer[NodeId, Event]()
+        self.event_sender = event_sender
+        self._system_id = SystemId()
+        self._multi_buffer = MultiSourceBuffer[SystemId, Event]()
         self._event_log = DiskEventLog(EXO_EVENT_LOG_DIR / "master")
         self._pending_traces: dict[TaskId, dict[int, list[TraceEventData]]] = {}
         self._expected_ranks: dict[TaskId, set[int]] = {}
@@ -102,19 +154,19 @@ class Master:
             async with self._tg as tg:
                 tg.start_soon(self._event_processor)
                 tg.start_soon(self._command_processor)
-                tg.start_soon(self._loopback_processor)
                 tg.start_soon(self._plan)
+        except* (EventRouterBrokenResourceError, EventRouterClosedResourceError):
+            # Event router has been closed (try-star syntax handles error groups)
+            pass
         finally:
             self._event_log.close()
             self.global_event_sender.close()
             self.local_event_receiver.close()
             self.command_receiver.close()
-            self._loopback_event_sender.close()
-            self._loopback_event_receiver.close()
 
     async def shutdown(self):
         logger.info("Stopping Master")
-        self._tg.cancel_scope.cancel()
+        self._tg.cancel_tasks()
 
     async def _command_processor(self) -> None:
         with self.command_receiver as commands:
@@ -129,20 +181,33 @@ class Master:
                         case TestCommand():
                             pass
                         case TextGeneration():
+                            # set-difference => prefill-only nodes
+                            prefill_only: set[InstanceId] = set()
+                            for link in self.state.instance_links.values():
+                                prefill_only.update(link.prefill_instances)
+                            for link in self.state.instance_links.values():
+                                prefill_only.difference_update(link.decode_instances)
+
                             for instance in self.state.instances.values():
+                                # NON-prefill-only instances matching the model ID
                                 if (
                                     instance.shard_assignments.model_id
                                     == command.task_params.model
+                                    and instance.instance_id not in prefill_only
                                 ):
+                                    # count in-flight tasks of that instance
+                                    in_flight = {TaskStatus.Pending, TaskStatus.Running}
                                     task_count = sum(
                                         1
                                         for task in self.state.tasks.values()
                                         if task.instance_id == instance.instance_id
+                                        and task.task_status in in_flight
                                     )
                                     instance_task_counts[instance.instance_id] = (
                                         task_count
                                     )
 
+                            # there are no NON-prefill-only instances matching this model ID
                             if not instance_task_counts:
                                 raise ValueError(
                                     f"No instance found for model {command.task_params.model}"
@@ -155,20 +220,27 @@ class Master:
                                 ],
                             )
 
+                            decode_instance_id = available_instance_ids[0]
                             task_id = TaskId()
+                            params = command.task_params.model_copy(
+                                update={
+                                    "prefill_endpoint": _prefill_endpoint_for(
+                                        self.state, decode_instance_id
+                                    ),
+                                }
+                            )
                             generated_events.append(
                                 TaskCreated(
                                     task_id=task_id,
                                     task=TextGenerationTask(
                                         task_id=task_id,
                                         command_id=command.command_id,
-                                        instance_id=available_instance_ids[0],
+                                        instance_id=decode_instance_id,
                                         task_status=TaskStatus.Pending,
-                                        task_params=command.task_params,
+                                        task_params=params,
                                     ),
                                 )
                             )
-
                             self.command_task_mapping[command.command_id] = task_id
                         case ImageGeneration():
                             for instance in self.state.instances.values():
@@ -176,10 +248,12 @@ class Master:
                                     instance.shard_assignments.model_id
                                     == command.task_params.model
                                 ):
+                                    in_flight = {TaskStatus.Pending, TaskStatus.Running}
                                     task_count = sum(
                                         1
                                         for task in self.state.tasks.values()
                                         if task.instance_id == instance.instance_id
+                                        and task.task_status in in_flight
                                     )
                                     instance_task_counts[instance.instance_id] = (
                                         task_count
@@ -230,10 +304,12 @@ class Master:
                                     instance.shard_assignments.model_id
                                     == command.task_params.model
                                 ):
+                                    in_flight = {TaskStatus.Pending, TaskStatus.Running}
                                     task_count = sum(
                                         1
                                         for task in self.state.tasks.values()
                                         if task.instance_id == instance.instance_id
+                                        and task.task_status in in_flight
                                     )
                                     instance_task_counts[instance.instance_id] = (
                                         task_count
@@ -288,7 +364,7 @@ class Master:
                             ):
                                 await self.download_command_sender.send(
                                     ForwarderDownloadCommand(
-                                        origin=self.node_id, command=cmd
+                                        origin=self._system_id, command=cmd
                                     )
                                 )
                             generated_events.extend(transition_events)
@@ -299,6 +375,9 @@ class Master:
                                 self.state.instances,
                                 self.state.node_memory,
                                 self.state.node_network,
+                                self.state.node_backends,
+                                download_status=self.state.downloads,
+                                node_rdma_ctl=self.state.node_rdma_ctl,
                             )
                             transition_events = get_transition_events(
                                 self.state.instances, placement, self.state.tasks
@@ -333,16 +412,44 @@ class Master:
                                         task_id=task_id,
                                     )
                                 )
-                        case TaskFinished():
-                            generated_events.append(
-                                TaskDeleted(
-                                    task_id=self.command_task_mapping[
-                                        command.finished_command_id
-                                    ]
+                            else:
+                                logger.warning(
+                                    f"Nonexistent command {command.cancelled_command_id} cancelled"
                                 )
+                        case TaskFinished():
+                            if (
+                                task_id := self.command_task_mapping.pop(
+                                    command.finished_command_id, None
+                                )
+                            ) is not None:
+                                generated_events.append(TaskDeleted(task_id=task_id))
+                            else:
+                                logger.warning(
+                                    f"Finished command {command.finished_command_id} finished"
+                                )
+
+                        case AddCustomModelCard():
+                            generated_events.append(
+                                CustomModelCardAdded(model_card=command.model_card)
                             )
-                            self.command_task_mapping.pop(
-                                command.finished_command_id, None
+                        case DeleteCustomModelCard():
+                            generated_events.append(
+                                CustomModelCardDeleted(model_id=command.model_id)
+                            )
+                        case SetInstanceLink():
+                            link = InstanceLink(
+                                link_id=command.link_id,
+                                prefill_instances=list(
+                                    dict.fromkeys(command.prefill_instances)
+                                ),
+                                decode_instances=list(
+                                    dict.fromkeys(command.decode_instances)
+                                ),
+                            )
+                            generated_events.append(InstanceLinkCreated(link=link))
+                        case DeleteInstanceLink():
+                            generated_events.append(
+                                InstanceLinkDeleted(link_id=command.link_id)
                             )
                         case RequestEventLog():
                             # We should just be able to send everything, since other buffers will ignore old messages
@@ -352,10 +459,12 @@ class Master:
                                 self._event_log.read_range(command.since_idx, end),
                                 start=command.since_idx,
                             ):
-                                await self._send_event(IndexedEvent(idx=i, event=event))
+                                await self._send_indexed_event(
+                                    IndexedEvent(idx=i, event=event)
+                                )
                     for event in generated_events:
                         await self.event_sender.send(event)
-                except ValueError as e:
+                except Exception as e:
                     logger.opt(exception=e).warning("Error in command processor")
 
     # These plan loops are the cracks showing in our event sourcing architecture - more things could be commands
@@ -397,37 +506,26 @@ class Master:
                         continue
 
                     logger.debug(f"Master indexing event: {str(event)[:100]}")
+
+                    event = event.model_copy(
+                        update={"_master_time_stamp": datetime.now(tz=timezone.utc)}
+                    )
+                    if isinstance(event, NodeGatheredInfo):
+                        event = event.model_copy(
+                            update={"when": str(datetime.now(tz=timezone.utc))}
+                        )
+
                     indexed = IndexedEvent(event=event, idx=len(self._event_log))
                     self.state = apply(self.state, indexed)
 
-                    event._master_time_stamp = datetime.now(tz=timezone.utc)  # pyright: ignore[reportPrivateUsage]
-                    if isinstance(event, NodeGatheredInfo):
-                        event.when = str(datetime.now(tz=timezone.utc))
-
                     self._event_log.append(event)
-                    await self._send_event(indexed)
-
-    async def _loopback_processor(self) -> None:
-        # this would ideally not be necessary.
-        # this is WAY less hacky than how I was working around this before
-        local_index = 0
-        with self._loopback_event_receiver as events:
-            async for event in events:
-                await self._loopback_event_sender.send(
-                    ForwarderEvent(
-                        origin=NodeId(f"master_{self.node_id}"),
-                        origin_idx=local_index,
-                        session=self.session_id,
-                        event=event,
-                    )
-                )
-                local_index += 1
+                    await self._send_indexed_event(indexed)
 
     # This function is re-entrant, take care!
-    async def _send_event(self, event: IndexedEvent):
+    async def _send_indexed_event(self, event: IndexedEvent):
         # Convenience method since this line is ugly
         await self.global_event_sender.send(
-            ForwarderEvent(
+            GlobalForwarderEvent(
                 origin=self.node_id,
                 origin_idx=event.idx,
                 session=self.session_id,

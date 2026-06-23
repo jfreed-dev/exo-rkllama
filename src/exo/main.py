@@ -1,35 +1,42 @@
 import argparse
-import itertools
 import multiprocessing as mp
 import os
 import resource
 import signal
+import sys
 from dataclasses import dataclass, field
-from typing import Iterator, Self
+from typing import Self
 
 import anyio
-from anyio.abc import TaskGroup
+from anyio.lowlevel import checkpoint as anyio_checkpoint
+from daemon import DaemonContext  # pyright: ignore[reportMissingTypeStubs]
+from exo_rs import Pidfile, PidfileError
 from loguru import logger
 from pydantic import PositiveInt
 
 import exo.routing.topics as topics
+from exo import __version__
+from exo.api.main import API
 from exo.download.coordinator import DownloadCoordinator
 from exo.download.impl_shard_downloader import exo_shard_downloader
-from exo.master.api import API  # TODO: should API be in master?
 from exo.master.main import Master
-from exo.routing.router import Router, get_node_id_keypair
-from exo.shared.constants import EXO_LOG
+from exo.routing.event_router import EventRouter
+from exo.routing.router import Router, get_node_zid
+from exo.shared.constants import EXO_DEFAULT_MODELS_DIR, EXO_LOG, EXO_PID_FILE
 from exo.shared.election import Election, ElectionResult
 from exo.shared.logging import logger_cleanup, logger_setup
 from exo.shared.types.common import NodeId, SessionId
+from exo.utils import STDIO_FDS
 from exo.utils.channels import Receiver, channel
-from exo.utils.pydantic_ext import CamelCaseModel
+from exo.utils.pydantic_ext import FrozenModel
+from exo.utils.task_group import TaskGroup
 from exo.worker.main import Worker
 
 
 @dataclass
 class Node:
     router: Router
+    event_router: EventRouter
     download_coordinator: DownloadCoordinator | None
     worker: Worker | None
     election: Election  # Every node participates in election, as we do want a node to become master even if it isn't a master candidate if no master candidates are present.
@@ -38,37 +45,45 @@ class Node:
     api: API | None
 
     node_id: NodeId
-    event_index_counter: Iterator[int]
     offline: bool
-    _tg: TaskGroup = field(init=False, default_factory=anyio.create_task_group)
+    _api_port: int
+    _tg: TaskGroup = field(init=False, default_factory=TaskGroup)
 
     @classmethod
-    async def create(cls, args: "Args") -> "Self":
-        keypair = get_node_id_keypair()
-        node_id = NodeId(keypair.to_peer_id().to_base58())
+    async def create(cls, args: "Args") -> Self:
+        node_id = get_node_zid()
         session_id = SessionId(master_node_id=node_id, election_clock=0)
-        router = Router.create(keypair)
+        router = Router.create(
+            node_id,
+            namespace=args.namespace,
+            listen_port=args.zenoh_port,
+            discovery_service_port=args.discovery_port,
+        )
         await router.register_topic(topics.GLOBAL_EVENTS)
         await router.register_topic(topics.LOCAL_EVENTS)
         await router.register_topic(topics.COMMANDS)
         await router.register_topic(topics.ELECTION_MESSAGES)
         await router.register_topic(topics.CONNECTION_MESSAGES)
         await router.register_topic(topics.DOWNLOAD_COMMANDS)
+        event_router = EventRouter(
+            session_id,
+            command_sender=router.sender(topics.COMMANDS),
+            external_outbound=router.sender(topics.LOCAL_EVENTS),
+            external_inbound=router.receiver(topics.GLOBAL_EVENTS),
+        )
 
         logger.info(f"Starting node {node_id}")
 
-        # Create shared event index counter for Worker and DownloadCoordinator
-        event_index_counter = itertools.count()
+        # Errors the very first time exo is run as dir doesn't exist
+        EXO_DEFAULT_MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
         # Create DownloadCoordinator (unless --no-downloads)
         if not args.no_downloads:
             download_coordinator = DownloadCoordinator(
                 node_id,
-                session_id,
-                exo_shard_downloader(),
+                exo_shard_downloader(offline=args.offline),
+                event_sender=event_router.sender(),
                 download_command_receiver=router.receiver(topics.DOWNLOAD_COMMANDS),
-                local_event_sender=router.sender(topics.LOCAL_EVENTS),
-                event_index_counter=event_index_counter,
                 offline=args.offline,
             )
         else:
@@ -77,9 +92,8 @@ class Node:
         if args.spawn_api:
             api = API(
                 node_id,
-                session_id,
                 port=args.api_port,
-                global_event_receiver=router.receiver(topics.GLOBAL_EVENTS),
+                event_receiver=event_router.receiver(),
                 command_sender=router.sender(topics.COMMANDS),
                 download_command_sender=router.sender(topics.DOWNLOAD_COMMANDS),
                 election_receiver=router.receiver(topics.ELECTION_MESSAGES),
@@ -90,12 +104,11 @@ class Node:
         if not args.no_worker:
             worker = Worker(
                 node_id,
-                session_id,
-                global_event_receiver=router.receiver(topics.GLOBAL_EVENTS),
-                local_event_sender=router.sender(topics.LOCAL_EVENTS),
+                event_receiver=event_router.receiver(),
+                event_sender=event_router.sender(),
                 command_sender=router.sender(topics.COMMANDS),
                 download_command_sender=router.sender(topics.DOWNLOAD_COMMANDS),
-                event_index_counter=event_index_counter,
+                api_port=args.api_port,
             )
         else:
             worker = None
@@ -104,6 +117,7 @@ class Node:
         master = Master(
             node_id,
             session_id,
+            event_sender=event_router.sender(),
             global_event_sender=router.sender(topics.GLOBAL_EVENTS),
             local_event_receiver=router.receiver(topics.LOCAL_EVENTS),
             command_receiver=router.receiver(topics.COMMANDS),
@@ -126,6 +140,7 @@ class Node:
 
         return cls(
             router,
+            event_router,
             download_coordinator,
             worker,
             election,
@@ -133,8 +148,8 @@ class Node:
             master,
             api,
             node_id,
-            event_index_counter,
             args.offline,
+            args.api_port,
         )
 
     async def run(self):
@@ -142,6 +157,7 @@ class Node:
             signal.signal(signal.SIGINT, lambda _, __: self.shutdown())
             signal.signal(signal.SIGTERM, lambda _, __: self.shutdown())
             tg.start_soon(self.router.run)
+            tg.start_soon(self.event_router.run)
             tg.start_soon(self.election.run)
             if self.download_coordinator:
                 tg.start_soon(self.download_coordinator.run)
@@ -155,11 +171,11 @@ class Node:
 
     def shutdown(self):
         # if this is our second call to shutdown, just sys.exit
-        if self._tg.cancel_scope.cancel_called:
+        if self._tg.cancel_called():
             import sys
 
             sys.exit(1)
-        self._tg.cancel_scope.cancel()
+        self._tg.cancel_tasks()
 
     async def _elect_loop(self):
         with self.election_result_receiver as results:
@@ -176,11 +192,24 @@ class Node:
                 # - Shutdown and re-create the worker
                 # - Shut down and re-create the API
 
+                if result.is_new_master:
+                    await anyio_checkpoint()
+                    self.event_router.shutdown()
+                    self.event_router = EventRouter(
+                        result.session_id,
+                        self.router.sender(topics.COMMANDS),
+                        self.router.receiver(topics.GLOBAL_EVENTS),
+                        self.router.sender(topics.LOCAL_EVENTS),
+                    )
+
                 if (
                     result.session_id.master_node_id == self.node_id
                     and self.master is not None
                 ):
-                    logger.info("Node elected Master")
+                    assert not result.is_new_master, (
+                        "cannot be new master if we remain master"
+                    )
+                    logger.info("Node elected Master - maintaining self")
                 elif (
                     result.session_id.master_node_id == self.node_id
                     and self.master is None
@@ -189,6 +218,7 @@ class Node:
                     self.master = Master(
                         self.node_id,
                         result.session_id,
+                        event_sender=self.event_router.sender(),
                         global_event_sender=self.router.sender(topics.GLOBAL_EVENTS),
                         local_event_receiver=self.router.receiver(topics.LOCAL_EVENTS),
                         command_receiver=self.router.receiver(topics.COMMANDS),
@@ -211,77 +241,143 @@ class Node:
                         f"Node {result.session_id.master_node_id} elected master"
                     )
                 if result.is_new_master:
-                    await anyio.sleep(0)
-                    # Fresh counter for new session (buffer expects indices from 0)
-                    self.event_index_counter = itertools.count()
                     if self.download_coordinator:
-                        self.download_coordinator.shutdown()
+                        await self.download_coordinator.shutdown()
                         self.download_coordinator = DownloadCoordinator(
                             self.node_id,
-                            result.session_id,
-                            exo_shard_downloader(),
+                            exo_shard_downloader(offline=self.offline),
+                            event_sender=self.event_router.sender(),
                             download_command_receiver=self.router.receiver(
                                 topics.DOWNLOAD_COMMANDS
                             ),
-                            local_event_sender=self.router.sender(topics.LOCAL_EVENTS),
-                            event_index_counter=self.event_index_counter,
                             offline=self.offline,
                         )
                         self._tg.start_soon(self.download_coordinator.run)
                     if self.worker:
-                        self.worker.shutdown()
+                        await self.worker.shutdown()
                         # TODO: add profiling etc to resource monitor
                         self.worker = Worker(
                             self.node_id,
-                            result.session_id,
-                            global_event_receiver=self.router.receiver(
-                                topics.GLOBAL_EVENTS
-                            ),
-                            local_event_sender=self.router.sender(topics.LOCAL_EVENTS),
+                            event_receiver=self.event_router.receiver(),
+                            event_sender=self.event_router.sender(),
                             command_sender=self.router.sender(topics.COMMANDS),
                             download_command_sender=self.router.sender(
                                 topics.DOWNLOAD_COMMANDS
                             ),
-                            event_index_counter=self.event_index_counter,
+                            api_port=self._api_port,
                         )
                         self._tg.start_soon(self.worker.run)
                     if self.api:
-                        self.api.reset(result.session_id, result.won_clock)
+                        self.api.reset(result.won_clock, self.event_router.receiver())
+                    self._tg.start_soon(self.event_router.run)
                 else:
                     if self.api:
                         self.api.unpause(result.won_clock)
 
 
 def main():
+    # Parse args first => --help or bad args don't require PID-locking
     args = Args.parse()
+
+    # Exit early if cannot acquire PID file
+    try:
+        pidfile = Pidfile(EXO_PID_FILE, 0o0600)
+    except PidfileError as e:
+        print(e, file=sys.stderr)
+        raise SystemExit(1) from e
+
+    try:
+        if args.legacy_daemon:
+            # keep stdio backed by explicit /dev/null streams. multiprocessing spawn expects
+            # valid stdio FDs; letting DaemonContext close/reopen them can break runner startup.
+            for stream in (sys.stdout, sys.stderr, sys.__stdout__, sys.__stderr__):
+                if stream is not None:
+                    stream.flush()
+            stdin = open(os.devnull, "r")  # noqa: SIM115
+            stdout = open(os.devnull, "w")  # noqa: SIM115
+            stderr = open(os.devnull, "w")  # noqa: SIM115
+
+            with DaemonContext(
+                detach_process=True,
+                files_preserve=[pidfile.as_raw_fd()],
+                stdin=stdin,
+                stdout=stdout,
+                stderr=stderr,
+            ):
+                # cleanup loose file descriptors (as long as they aren't stdio)
+                for f in (
+                    f for f in (stdin, stdout, stderr) if f.fileno() not in STDIO_FDS
+                ):
+                    f.close()
+
+                # 1) if daemonizing => fork then write PID
+                try:
+                    pidfile.write()
+                except PidfileError as e:
+                    print(e, file=sys.stderr)
+                    raise SystemExit(1) from e
+                main_inner(args)
+        else:
+            # 2) otherwise      => just write PID
+            try:
+                pidfile.write()
+            except PidfileError as e:
+                print(e, file=sys.stderr)
+                raise SystemExit(1) from e
+            main_inner(args)
+    finally:
+        pidfile.close()
+
+
+def main_inner(args: "Args"):
     soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
     target = min(max(soft, 65535), hard)
     resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
 
-    mp.set_start_method("spawn")
+    mp.set_start_method("spawn", force=True)
+
     # TODO: Refactor the current verbosity system
     logger_setup(EXO_LOG, args.verbosity)
-    logger.info("Starting EXO")
-    logger.info(f"EXO_LIBP2P_NAMESPACE: {os.getenv('EXO_LIBP2P_NAMESPACE')}")
+
+    logger.info(f"pid = {os.getpid()}")
+    if os.getenv("EXO_LIBP2P_NAMESPACE"):
+        raise ValueError(
+            "EXO_LIBP2P_NAMESPACE has been removed - use EXO_ZENOH_NAMESPACE instead"
+        )
+    logger.info(f"EXO_ZENOH_NAMESPACE: {os.getenv('EXO_ZENOH_NAMESPACE')}")
 
     if args.offline:
         logger.info("Running in OFFLINE mode — no internet checks, local models only")
 
+    if args.bootstrap_peers:
+        raise ValueError("Bootstrap peers has been temporarily removed")
+
+    if args.no_batch:
+        os.environ["EXO_NO_BATCH"] = "1"
+        logger.info("Continuous batching disabled (--no-batch)")
+
     # Set FAST_SYNCH override env var for runner subprocesses
     if args.fast_synch is True:
-        os.environ["EXO_FAST_SYNCH"] = "on"
+        os.environ["EXO_FAST_SYNCH"] = "true"
         logger.info("FAST_SYNCH forced ON")
     elif args.fast_synch is False:
-        os.environ["EXO_FAST_SYNCH"] = "off"
+        os.environ["EXO_FAST_SYNCH"] = "false"
         logger.info("FAST_SYNCH forced OFF")
 
     node = anyio.run(Node.create, args)
-    anyio.run(node.run)
-    logger.info("EXO Shutdown complete")
-    logger_cleanup()
+    try:
+        anyio.run(node.run)
+    except BaseException as exception:
+        logger.opt(exception=exception).critical(
+            "EXO terminated due to unhandled exception"
+        )
+        raise
+    finally:
+        logger.info("EXO Shutdown complete")
+        logger_cleanup()
 
 
-class Args(CamelCaseModel):
+class Args(FrozenModel):
     verbosity: int = 0
     force_master: bool = False
     spawn_api: bool = False
@@ -289,8 +385,14 @@ class Args(CamelCaseModel):
     tb_only: bool = False
     no_worker: bool = False
     no_downloads: bool = False
-    offline: bool = False
+    offline: bool = os.getenv("EXO_OFFLINE", "false").lower() == "true"
+    no_batch: bool = False
     fast_synch: bool | None = None  # None = auto, True = force on, False = force off
+    legacy_daemon: bool = False
+    bootstrap_peers: list[str] = []
+    namespace: str
+    zenoh_port: int
+    discovery_port: int
 
     @classmethod
     def parse(cls) -> Self:
@@ -340,7 +442,48 @@ class Args(CamelCaseModel):
         parser.add_argument(
             "--offline",
             action="store_true",
+            default=os.getenv("EXO_OFFLINE", "false").lower() == "true",
             help="Run in offline/air-gapped mode: skip internet checks, use only pre-staged local models",
+        )
+        parser.add_argument(
+            "--no-batch",
+            action="store_true",
+            help="Disable continuous batching, use sequential generation",
+        )
+        parser.add_argument(
+            "--legacy-daemon",
+            action="store_true",
+            help="Run as a legacy SysV-style background daemon using double-fork daemonization",
+        )
+        parser.add_argument(
+            "--bootstrap-peers",
+            type=lambda s: [p for p in s.split(",") if p],
+            default=os.getenv("EXO_BOOTSTRAP_PEERS", "").split(",")
+            if os.getenv("EXO_BOOTSTRAP_PEERS")
+            else [],
+            dest="bootstrap_peers",
+            help="Comma-separated libp2p multiaddrs to dial on startup (env: EXO_BOOTSTRAP_PEERS)",
+        )
+        parser.add_argument(
+            "--namespace",
+            type=str,
+            default=__version__,
+            dest="namespace",
+            help="Discovery namespace, nodes with different namespaces will not connect.",
+        )
+        parser.add_argument(
+            "--zenoh-port",
+            type=int,
+            default=52414,
+            dest="zenoh_port",
+            help="Fixed TCP port for zenoh to listen.",
+        )
+        parser.add_argument(
+            "--discovery-port",
+            type=int,
+            default=52413,
+            dest="discovery_port",
+            help="Fixed UDP port for the discovery service.",
         )
         fast_synch_group = parser.add_mutually_exclusive_group()
         fast_synch_group.add_argument(

@@ -3,16 +3,17 @@
     messages,
     currentResponse,
     isLoading,
+    prefillProgress,
     deleteMessage,
     editAndRegenerate,
     regenerateLastResponse,
     regenerateFromToken,
     setEditingImage,
   } from "$lib/stores/app.svelte";
-  import type { Message } from "$lib/stores/app.svelte";
   import type { MessageAttachment } from "$lib/stores/app.svelte";
   import MarkdownContent from "./MarkdownContent.svelte";
   import TokenHeatmap from "./TokenHeatmap.svelte";
+  import PrefillProgressBar from "./PrefillProgressBar.svelte";
   import ImageLightbox from "./ImageLightbox.svelte";
 
   interface Props {
@@ -25,6 +26,7 @@
   const messageList = $derived(messages());
   const response = $derived(currentResponse());
   const loading = $derived(isLoading());
+  const prefill = $derived(prefillProgress());
 
   // Scroll management - user controls scroll, show button when not at bottom
   const SCROLL_THRESHOLD = 100;
@@ -137,6 +139,8 @@
         return "🖼";
       case "text":
         return "📄";
+      case "pdf":
+        return "📑";
       default:
         return "📎";
     }
@@ -428,6 +432,9 @@
             {:else}
               <!-- Assistant message styling -->
               <div class="p-3 sm:p-4">
+                {#if loading && isLastAssistantMessage(message.id) && prefill && !message.content}
+                  <PrefillProgressBar progress={prefill} class="mb-3" />
+                {/if}
                 {#if message.thinking && message.thinking.trim().length > 0}
                   <div
                     class="mb-3 rounded border border-exo-yellow/20 bg-exo-black/40"
@@ -802,8 +809,8 @@
       >
         AWAITING INPUT
       </p>
-      <p class="text-sm sm:text-xs text-exo-light-gray tracking-wider mt-1">
-        ENTER A QUERY TO BEGIN
+      <p class="text-xs text-white/30 tracking-wider mt-1.5 font-mono">
+        Type a message below &middot; Shift+Enter for newline
       </p>
     </div>
   {/if}
@@ -818,6 +825,7 @@
       onclick={scrollToBottom}
       class="sticky bottom-4 left-1/2 -translate-x-1/2 w-10 h-10 rounded-full bg-exo-dark-gray/90 border border-exo-medium-gray/50 flex items-center justify-center text-exo-light-gray hover:text-exo-yellow hover:border-exo-yellow/50 transition-all shadow-lg cursor-pointer z-10"
       title="Scroll to bottom"
+      aria-label="Scroll to bottom of messages"
     >
       <svg
         class="w-5 h-5"
