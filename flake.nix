@@ -106,6 +106,13 @@
           };
           treefmt = {
             projectRootFile = "flake.nix";
+            # Fork-added trees that are not the active package: the orphaned pre-zenoh
+            # `exo/` tree and the standalone `rkllm-converter/`. Kept out of the format
+            # gate (mirrors the ruff/basedpyright excludes) so CI stays a clean signal.
+            settings.global.excludes = [
+              "exo/**"
+              "rkllm-converter/**"
+            ];
             programs = {
               nixpkgs-fmt.enable = true;
               ruff-format = {
