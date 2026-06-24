@@ -1,0 +1,24 @@
+model_id = "qwen2.5-7b-rkllm"
+n_layers = 28
+hidden_size = 3584
+num_key_value_heads = 4
+supports_tensor = false
+tasks = ["TextGeneration"]
+backends = ["RkllmNpu"]
+family = "qwen"
+quantization = "w8a8"
+base_model = "Qwen 2.5 7B"
+capabilities = ["text"]
+context_length = 4096
+
+# RKLLM runs on the Rockchip RK3588/RK3576 NPU. A pre-converted `.rkllm` file must be
+# present on the NPU node — HTTP backend: under the rkllama models dir (the model_id is
+# the directory name); ctypes backend: ~/RKLLAMA/models/qwen2.5-7b-rkllm/ or RKLLM_MODEL_PATH.
+# Source weights: Qwen/Qwen2.5-7B-Instruct; convert with airockchip/rknn-llm (RKLLM toolkit).
+[storage_size]
+in_bytes = 8000000000
+
+[sampling_defaults]
+temperature = 0.7
+top_p = 0.8
+top_k = 20

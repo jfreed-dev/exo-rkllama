@@ -44,6 +44,7 @@ from exo.shared.types.worker.instances import (
     InstanceMeta,
     MlxJacclInstance,
     MlxRingInstance,
+    RkllmSingleNodeInstance,
 )
 from exo.shared.types.worker.shards import Sharding
 from exo.utils.ports import random_ephemeral_port
@@ -51,6 +52,7 @@ from exo.utils.ports import random_ephemeral_port
 INSTANCE_META_BACKENDS: dict[InstanceMeta, list[Backend]] = {
     InstanceMeta.MlxRing: [Backend.MlxMetal, Backend.MlxCuda, Backend.MlxCpu],
     InstanceMeta.MlxJaccl: [Backend.MlxMetal],
+    InstanceMeta.RkllmSingleNode: [Backend.RkllmNpu],
 }
 
 
@@ -114,6 +116,17 @@ def place_instance(
     download_status: Mapping[NodeId, Sequence[DownloadProgress]] | None = None,
     node_rdma_ctl: Mapping[NodeId, NodeRdmaCtlStatus] | None = None,
 ) -> dict[InstanceId, Instance]:
+    # RKLLM runs a whole model on a single NPU (no sharding across nodes), so force
+    # a single-node pipeline placement regardless of what was requested.
+    if Backend.RkllmNpu in command.model_card.backends:
+        command = command.model_copy(
+            update={
+                "instance_meta": InstanceMeta.RkllmSingleNode,
+                "sharding": Sharding.Pipeline,
+                "min_nodes": 1,
+            }
+        )
+
     cycles = topology.get_cycles()
     candidate_cycles = list(filter(lambda it: len(it) >= command.min_nodes, cycles))
 
@@ -170,6 +183,16 @@ def place_instance(
         if not cycles_with_sufficient_memory:
             raise ValueError(
                 "Pipeline parallelism is not supported for Gemma 4; use tensor parallelism instead."
+            )
+
+    if command.instance_meta == InstanceMeta.RkllmSingleNode:
+        cycles_with_sufficient_memory = [
+            cycle for cycle in cycles_with_sufficient_memory if len(cycle) == 1
+        ]
+        if not cycles_with_sufficient_memory:
+            raise ValueError(
+                "RKLLM runs a whole model on one NPU node; no single-node cycle has "
+                f"enough memory for {command.model_card.model_id}"
             )
 
     smallest_cycles = get_smallest_cycles(cycles_with_sufficient_memory)
@@ -242,8 +265,12 @@ def place_instance(
         ),
     )
 
-    # Single-node: force Pipeline/Ring (Tensor and Jaccl require multi-node)
-    if len(selected_cycle) == 1:
+    # Single-node: force Pipeline/Ring (Tensor and Jaccl require multi-node).
+    # RKLLM is already pinned to its own single-node meta above; leave it alone.
+    if (
+        len(selected_cycle) == 1
+        and command.instance_meta != InstanceMeta.RkllmSingleNode
+    ):
         command = command.model_copy(
             update={
                 "instance_meta": InstanceMeta.MlxRing,
@@ -306,6 +333,12 @@ def place_instance(
                 shard_assignments=shard_assignments,
                 hosts_by_node=hosts_by_node,
                 ephemeral_port=ephemeral_port,
+            )
+        case InstanceMeta.RkllmSingleNode:
+            # Single-node pipeline assignment: one shard, world_size 1, rank 0.
+            target_instances[instance_id] = RkllmSingleNodeInstance(
+                instance_id=instance_id,
+                shard_assignments=shard_assignments,
             )
 
     return target_instances

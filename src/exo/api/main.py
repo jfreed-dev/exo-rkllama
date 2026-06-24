@@ -144,6 +144,7 @@ from exo.shared.models.model_cards import (
     ModelTask,
 )
 from exo.shared.tracing import TraceEvent, compute_stats, export_trace, load_trace_file
+from exo.shared.types.backends import Backend
 from exo.shared.types.chunks import (
     ErrorChunk,
     ImageChunk,
@@ -525,16 +526,22 @@ class API:
                 status_code=400, detail=f"Failed to load model card: {exc}"
             ) from exc
         instance_combinations: list[tuple[Sharding, InstanceMeta, int]] = []
-        for sharding in (Sharding.Pipeline, Sharding.Tensor):
-            for instance_meta in (InstanceMeta.MlxRing, InstanceMeta.MlxJaccl):
-                instance_combinations.extend(
-                    [
-                        (sharding, instance_meta, i)
-                        for i in range(
-                            1, len(list(self.state.topology.list_nodes())) + 1
-                        )
-                    ]
-                )
+        if Backend.RkllmNpu in model_card.backends:
+            # RKLLM is whole-model on one NPU; only a single-node pipeline applies.
+            instance_combinations.append(
+                (Sharding.Pipeline, InstanceMeta.RkllmSingleNode, 1)
+            )
+        else:
+            for sharding in (Sharding.Pipeline, Sharding.Tensor):
+                for instance_meta in (InstanceMeta.MlxRing, InstanceMeta.MlxJaccl):
+                    instance_combinations.extend(
+                        [
+                            (sharding, instance_meta, i)
+                            for i in range(
+                                1, len(list(self.state.topology.list_nodes())) + 1
+                            )
+                        ]
+                    )
         # TODO: PDD
         # instance_combinations.append((Sharding.PrefillDecodeDisaggregation, InstanceMeta.MlxRing, 1))
 

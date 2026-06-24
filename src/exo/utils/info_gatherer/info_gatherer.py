@@ -380,6 +380,11 @@ class NodeBackends(TaggedModel):
         if await to_thread.run_sync(_has_nvml_cuda):
             backends.append(Backend.MlxCuda)
             backends.append(Backend.Vllm)
+        # Lazy import keeps the worker package out of utils' import graph.
+        from exo.worker.engines.rkllm.detection import detect_rockchip_npu
+
+        if await to_thread.run_sync(detect_rockchip_npu):
+            backends.append(Backend.RkllmNpu)
         return cls(backends=backends)
 
 

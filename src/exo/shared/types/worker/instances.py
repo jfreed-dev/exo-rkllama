@@ -3,6 +3,7 @@ from enum import Enum
 from pydantic import model_validator
 
 from exo.shared.models.model_cards import ModelTask
+from exo.shared.types.backends import Backend
 from exo.shared.types.common import Host, Id, NodeId
 from exo.shared.types.worker.runners import RunnerId, ShardAssignments, ShardMetadata
 from exo.utils.pydantic_ext import FrozenModel, TaggedModel
@@ -15,6 +16,7 @@ class InstanceId(Id):
 class InstanceMeta(str, Enum):
     MlxRing = "MlxRing"
     MlxJaccl = "MlxJaccl"
+    RkllmSingleNode = "RkllmSingleNode"
 
 
 class BaseInstance(TaggedModel):
@@ -35,8 +37,15 @@ class MlxJacclInstance(BaseInstance):
     jaccl_coordinators: dict[NodeId, str]
 
 
-# TODO: Single node instance
-Instance = MlxRingInstance | MlxJacclInstance
+class RkllmSingleNodeInstance(BaseInstance):
+    """Whole-model placement on a single Rockchip NPU node.
+
+    RKLLM loads a complete model and exchanges tokens (not hidden states), so it
+    cannot be sharded across nodes. No ring/jaccl coordination is needed.
+    """
+
+
+Instance = MlxRingInstance | MlxJacclInstance | RkllmSingleNodeInstance
 
 
 class BoundInstance(FrozenModel):
@@ -56,6 +65,10 @@ class BoundInstance(FrozenModel):
             ModelTask.TextToImage in self.bound_shard.model_card.tasks
             or ModelTask.ImageToImage in self.bound_shard.model_card.tasks
         )
+
+    @property
+    def is_rkllm_model(self) -> bool:
+        return Backend.RkllmNpu in self.bound_shard.model_card.backends
 
     @model_validator(mode="after")
     def validate_shard_exists(self) -> "BoundInstance":

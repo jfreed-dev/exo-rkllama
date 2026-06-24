@@ -65,7 +65,11 @@ def entrypoint(
         from exo.worker.runner.runner import Runner
 
         builder: Builder
-        if bound_instance.is_image_model:
+        if bound_instance.is_rkllm_model:
+            from exo.worker.engines.rkllm.builder import RkllmBuilder
+
+            builder = RkllmBuilder(event_sender_downcast, cancel_receiver)
+        elif bound_instance.is_image_model:
             from exo.worker.engines.image.builder import MfluxBuilder
 
             builder = MfluxBuilder(
