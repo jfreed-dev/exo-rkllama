@@ -15,19 +15,19 @@ cd "$(dirname "$0")/.."
 
 fail=0
 run() {
-	echo
-	echo "▶ $*"
-	if ! "$@"; then
-		echo "✗ FAILED: $*"
-		fail=1
-	fi
+  echo
+  echo "▶ $*"
+  if ! "$@"; then
+    echo "✗ FAILED: $*"
+    fail=1
+  fi
 }
 
 [ "${SKIP_RUFF:-0}" = 1 ] || run uv run ruff check
 [ "${SKIP_PYRIGHT:-0}" = 1 ] || run uv run basedpyright
 [ "${SKIP_TESTS:-0}" = 1 ] || run env EXO_DASHBOARD_DIR=placeholder uv run pytest -q
 if command -v nix >/dev/null 2>&1 && [ "${SKIP_FMT:-0}" != 1 ]; then
-	run nix fmt
+  run nix fmt
 fi
 
 echo
