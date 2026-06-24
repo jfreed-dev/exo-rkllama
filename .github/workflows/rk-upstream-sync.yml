@@ -1,0 +1,109 @@
+name: rk-upstream-sync
+
+# Drift detector: merge upstream exo into the RK line, run the gate, and open a PR
+# when it's clean — or fail loudly on a conflict / gate failure.
+#
+# NOTE: `schedule` only fires from the repository's DEFAULT branch. To get the weekly
+# run, make `rk-integration` the default branch (keep `main` as the upstream mirror),
+# or merge this file to the current default. `workflow_dispatch` works from any branch.
+
+on:
+  schedule:
+    - cron: "0 7 * * 1" # Mondays 07:00 UTC
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: RK branch to sync
+        default: rk-integration
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: rk-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Merge upstream/main and gate
+    runs-on: ubuntu-latest
+    env:
+      RK_BRANCH: ${{ inputs.branch || 'rk-integration' }}
+      SYNC_BRANCH: rk/upstream-sync
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Select RK branch
+        id: pick
+        run: |
+          if ! git ls-remote --exit-code --heads origin "$RK_BRANCH" >/dev/null 2>&1; then
+            echo "::notice::Branch '$RK_BRANCH' not on origin yet; rename your RK branch to it. Skipping."
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git checkout "$RK_BRANCH"
+
+      - name: Fetch upstream and count drift
+        id: drift
+        if: steps.pick.outputs.skip != '1'
+        run: |
+          git remote add upstream https://github.com/exo-explore/exo.git || true
+          git fetch upstream --tags
+          base="$(git merge-base HEAD upstream/main)"
+          count="$(git rev-list --count "$base"..upstream/main)"
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "::notice::$count upstream commit(s) to merge into $RK_BRANCH"
+
+      - name: Merge upstream/main
+        if: steps.pick.outputs.skip != '1' && steps.drift.outputs.count != '0'
+        run: |
+          git config user.name "rk-sync[bot]"
+          git config user.email "rk-sync@users.noreply.github.com"
+          git checkout -B "$SYNC_BRANCH"
+          if ! git merge --no-edit upstream/main; then
+            git merge --abort
+            echo "::error::Merge conflict with upstream/main. Resolve locally:" \
+                 "scripts/sync-upstream.sh, then push $SYNC_BRANCH."
+            exit 1
+          fi
+
+      - uses: cachix/install-nix-action@v31
+        if: steps.pick.outputs.skip != '1' && steps.drift.outputs.count != '0'
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - uses: cachix/cachix-action@v14
+        if: steps.pick.outputs.skip != '1' && steps.drift.outputs.count != '0'
+        with:
+          name: exo
+          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+
+      - name: Gate the merge result
+        if: steps.pick.outputs.skip != '1' && steps.drift.outputs.count != '0'
+        run: |
+          nix develop -c bash -c '
+            uv sync --all-packages
+            uv run ruff check
+            uv run basedpyright --project pyproject.toml
+            EXO_TESTS=1 EXO_DASHBOARD_DIR="$PWD/dashboard" EXO_RESOURCES_DIR="$PWD/resources" \
+              uv run pytest src/exo/worker/engines/rkllm src/exo/master/tests \
+              src/exo/shared/tests -m "not slow" --import-mode=importlib
+          '
+
+      - name: Push and open/update PR
+        if: steps.pick.outputs.skip != '1' && steps.drift.outputs.count != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git push -f origin "$SYNC_BRANCH"
+          if [ -z "$(gh pr list --head "$SYNC_BRANCH" --state open --json number --jq '.[].number')" ]; then
+            gh pr create --base "$RK_BRANCH" --head "$SYNC_BRANCH" \
+              --title "Sync upstream/main into $RK_BRANCH" \
+              --body "Automated upstream drift sync (${{ steps.drift.outputs.count }} commit(s)). The RK gate passed on the merged tree. Review and merge."
+          else
+            echo "::notice::Existing PR updated by force-push."
+          fi
