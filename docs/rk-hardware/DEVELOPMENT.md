@@ -13,8 +13,8 @@ whole model per node, the master routes requests.
 | `rk-integration` | Long-lived RK feature line. Upstream is merged into it regularly. |
 | `rk/<feature>` | Short-lived branches off `rk-integration`, merged back via PR. |
 
-> The current branch is `rkllm-src-exo-port`. Rename it to the stable name once you're
-> ready: `git branch -m rkllm-src-exo-port rk-integration`.
+> `rk-integration` is the repository's **default branch** (so scheduled/dispatch
+> workflows run); `main` is kept as a clean mirror of `upstream/main`.
 
 Remotes:
 
