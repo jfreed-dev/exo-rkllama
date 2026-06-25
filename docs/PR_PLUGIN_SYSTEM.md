@@ -1,3 +1,5 @@
+> ⚠️ **SUPERSEDED** — this document describes the pre-zenoh layout and contains commands/paths that no longer work. See [`docs/rk-hardware/DEVELOPMENT.md`](rk-hardware/DEVELOPMENT.md) for current guidance.
+
 # PR Draft: Inference Engine Plugin System
 
 **Target Repository:** [exo-explore/exo](https://github.com/exo-explore/exo)

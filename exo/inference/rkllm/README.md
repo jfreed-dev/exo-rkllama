@@ -1,3 +1,5 @@
+> ⚠️ **SUPERSEDED** — this document describes the pre-zenoh layout and contains commands/paths that no longer work. The live engine is `src/exo/worker/engines/rkllm/`. See [`docs/rk-hardware/DEVELOPMENT.md`](../../../docs/rk-hardware/DEVELOPMENT.md) for current guidance.
+
 # RKLLM Inference Engine
 
 RKLLM inference engine for Rockchip RK3588/RK3576 NPU devices. This engine integrates with the [rkllama](https://github.com/jfreed-dev/rkllama) server to provide LLM inference on Rockchip NPUs.

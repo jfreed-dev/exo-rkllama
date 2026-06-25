@@ -1,3 +1,5 @@
+> ⚠️ **SUPERSEDED** — this document describes the pre-zenoh layout and contains commands/paths that no longer work. See [`docs/rk-hardware/DEVELOPMENT.md`](docs/rk-hardware/DEVELOPMENT.md) for current guidance.
+
 # RKLLM Integration Session State
 
 **Last Updated:** 2025-12-27 (Session 2)
@@ -44,7 +46,7 @@ bb35f30 Add deployment guide with complete setup instructions
 - **Exo with RKLLM engine** - tested on DGX, ready for RK3588
 - **Prometheus metrics** - `/metrics` endpoint working
 - **Load balancer config** - nginx config ready for multi-node
-- **RKLLAMA server** on RK3588 node (10.10.88.73:8080)
+- **RKLLAMA server** on RK3588 node (<node-ip>:8080)
 - **Models**: Qwen2.5-1.5B-Instruct (~7.8 tok/s), DeepSeek-R1-1.5B (~8 tok/s)
 
 ### Files Created This Session
@@ -87,7 +89,7 @@ TODO.md                           # Updated completed tasks
 
 ### Local Development (DGX)
 ```bash
-cd /home/jon/Code/exo-rkllama
+cd <repo-path>
 source venv/bin/activate
 pip install -e .
 
@@ -99,10 +101,10 @@ curl http://localhost:52415/healthcheck
 curl http://localhost:52415/metrics | grep -E "^(exo_|rkllm_)"
 ```
 
-### RK3588 Node (10.10.88.73)
+### RK3588 Node (<node-ip>)
 ```bash
 # SSH
-ssh -i ~/.ssh/workbench root@10.10.88.73
+ssh -i <ssh-key-path> root@<node-ip>
 
 # Start RKLLAMA
 cd /opt/rkllama && source venv/bin/activate
@@ -114,7 +116,7 @@ RKLLM_SERVER_HOST=localhost RKLLM_SERVER_PORT=8080 \
   python -m exo.main --inference-engine rkllm --disable-tui
 
 # Test
-curl http://10.10.88.73:52415/v1/chat/completions \
+curl http://<node-ip>:52415/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model": "qwen2.5-1.5b-instruct-rkllm", "messages": [{"role": "user", "content": "Hello"}]}'
 ```

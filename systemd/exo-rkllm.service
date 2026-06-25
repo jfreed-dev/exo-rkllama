@@ -22,7 +22,14 @@ Environment="HOME=/root"
 ExecStartPre=/bin/bash -c 'for i in {1..30}; do curl -s http://localhost:8080/ > /dev/null && break || sleep 1; done'
 
 # Start exo with RKLLM engine
-ExecStart=/opt/exo/venv/bin/python -m exo.main --inference-engine rkllm --disable-tui
+# ⚠️ STALE — DO NOT USE AS-IS. The invocation below predates the zenoh re-port:
+#   - `/opt/exo/venv` no longer exists; exo now runs via `uv run exo`.
+#   - the `--inference-engine` and `--disable-tui` flags no longer exist.
+#   - the RK backend is now selected via the EXO_RKLLM_BACKEND env var plus the
+#     `qwen2.5-7b-rkllm` model card, not a CLI flag.
+# This unit must be rewritten to match the current layout before it can run.
+# See docs/rk-hardware/DEVELOPMENT.md for current run/backend guidance.
+# ExecStart=/opt/exo/venv/bin/python -m exo.main --inference-engine rkllm --disable-tui
 
 # Restart policy
 Restart=on-failure

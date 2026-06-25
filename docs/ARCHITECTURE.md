@@ -1,3 +1,5 @@
+> ⚠️ **SUPERSEDED** — this document describes the pre-zenoh layout and contains commands/paths that no longer work. See [`docs/rk-hardware/DEVELOPMENT.md`](rk-hardware/DEVELOPMENT.md) for current guidance.
+
 # Exo-RKLLAMA Architecture
 
 Comprehensive architecture documentation with visual diagrams for the exo distributed inference framework.
@@ -763,7 +765,8 @@ graph TB
 
 ## See Also
 
-- [Deployment Guide](DEPLOYMENT.md) - Complete setup instructions
-- [RKLLM Engine Details](../exo/inference/rkllm/README.md) - NPU-specific documentation
+- [RK Development & Deployment](rk-hardware/DEVELOPMENT.md) - **Current** setup, testing, and deployment guidance
+- [Deployment Guide](DEPLOYMENT.md) - ⚠️ superseded (pre-zenoh)
+- [RKLLM Engine Details](../exo/inference/rkllm/README.md) - ⚠️ superseded (pre-zenoh; live engine is `src/exo/worker/engines/rkllm/`)
 - [Nginx Load Balancer](../nginx/README.md) - Multi-node request distribution
 - [Systemd Services](../systemd/README.md) - Auto-start configuration

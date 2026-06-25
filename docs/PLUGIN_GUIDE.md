@@ -1,3 +1,5 @@
+> ⚠️ **SUPERSEDED** — this document describes the pre-zenoh layout and contains commands/paths that no longer work. See [`docs/rk-hardware/DEVELOPMENT.md`](rk-hardware/DEVELOPMENT.md) for current guidance.
+
 # Creating Exo Inference Engine Plugins
 
 This guide explains how to create third-party inference engine plugins for exo.
