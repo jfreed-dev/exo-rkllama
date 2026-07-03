@@ -8,6 +8,7 @@ import pytest
 from exo.shared.models.model_cards import ModelCard, ModelId, ModelTask
 from exo.shared.types.backends import Backend
 from exo.shared.types.common import NodeId
+from exo.shared.types.events import Event
 from exo.shared.types.memory import Memory
 from exo.shared.types.tasks import TaskId
 from exo.shared.types.text_generation import TextGenerationTaskParams
@@ -84,7 +85,7 @@ def test_load_without_connect_selects_backend(
 ) -> None:
     fake = FakeBackend()
     monkeypatch.setattr(builder_module, "select_backend", lambda: fake)
-    event_sender, _ = mp_channel()
+    event_sender, _ = mp_channel[Event]()
     _, cancel_receiver = mp_channel[TaskId]()
     rkllm_builder = RkllmBuilder(event_sender, cancel_receiver)
 
