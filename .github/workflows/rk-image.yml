@@ -1,0 +1,47 @@
+# Builds the RK1 deployment image (deploy/rk-k3s/Dockerfile) on a native arm64
+# runner and pushes it to GHCR for the K3s DaemonSet (issue #6).
+# RK-owned file — do not fold into pipeline.yml (keeps the upstream-merge surface small).
+name: rk-image
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Additional image tag
+        required: false
+        default: latest
+  push:
+    branches: [rk-integration]
+    paths:
+      - deploy/rk-k3s/Dockerfile
+      - .github/workflows/rk-image.yml
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-push:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/rk-k3s/Dockerfile
+          platforms: linux/arm64
+          push: true
+          tags: |
+            ghcr.io/freed-dev-llc/exo-rkllama-rk:${{ inputs.tag || 'latest' }}
+            ghcr.io/freed-dev-llc/exo-rkllama-rk:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
