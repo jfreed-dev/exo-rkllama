@@ -133,28 +133,32 @@ EXO_RKLLM_BACKEND=ctypes   # in-process librkllmrt.so (RKLLM_LIB_PATH / RKLLM_MO
 
 Tag RK builds with the upstream base they were cut from, e.g.
 `rk-v0.2.0+exo-g<short-sha>` where `<short-sha>` is `git rev-parse --short upstream/main`
-at sync time. Keep a short RK changelog of deltas against upstream.
+at sync time. The RK changelog of deltas against upstream is [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Status & next steps
 
-**Done:** CI is live and green on the default branch — `rk-ci` (fast Linux lint + RK unit
-tests), the upstream `ci-pipeline` (`nix flake check` ×3 platforms + macOS pytest), and
-`rk-upstream-sync` (scheduled/dispatch drift detector → opens a PR or fails on conflict).
+**Done** (details and dates in [`CHANGELOG.md`](CHANGELOG.md)):
+
+- CI on the default branch: `rk-ci`, upstream `ci-pipeline`, `rk-upstream-sync`, and
+  `rk-image` (arm64 image build; dispatch manually after source changes).
+- **Tier-2 validated on hardware (2026-07-03, issues #5 + #6 closed):** 4x RK1 on
+  Armbian vendor 6.1.115 / rknpu 0.9.8 / K3s; smoke PASS, NPU ~90% tri-core, data-parallel
+  routing 3/3 across two replicas. Bring-up procedure: [`RUNBOOK.md`](RUNBOOK.md).
+- Download resolution for `.rkllm` artifacts, ctypes bindings on the RKLLM 1.2.3 ABI
+  (real token ids, perf logging, `rkllm_abort` on cancel), replica anti-affinity.
 
 **Not yet built** (tracked as GitHub issues):
 
-- **Engine registry**: refactor dispatch (`bootstrap.py`) and detection
-  (`info_gatherer.py`) to a plugin registry / entry points (the pre-zenoh tree had
-  `plugin_discovery.py`) so RK support registers itself instead of editing shared files —
-  dropping the merge-conflict surface to ~zero.
-- **Tier-2 platform** (issue #5): verification found stock Talos cannot run RKLLM
-  (`rockchip-rknn` ships the mainline rocket driver); decided 2026-07-03 for
-  **Armbian + K3s** on the NPU nodes. Next: provision the RK1s (issue #5), then the
-  K3s DaemonSet automation (issue #6).
-- **Tier-2 k8s automation**: privileged exo DaemonSet + `.rkllm` models, NPU smoke/bench,
-  driven via `talosctl`/`kubectl`.
-- **`token_id` fidelity (HTTP)**, **ctypes chat templating**, and a
-  **RKLLM 1.2.3 → 1.3.0 / driver ≥ 0.9.8** bump (see the engine package + issues).
+- **Engine registry** (issue #7): refactor dispatch (`bootstrap.py`) and detection
+  (`info_gatherer.py`) to a plugin registry / entry points so RK support registers itself
+  instead of editing shared files, dropping the merge-conflict surface to ~zero.
+- **Engine quality** (issue #8): sampling-parameter pass-through (both backends ignore
+  request temperature/top_p/max tokens), ctypes chat templating (generic `System:/User:`
+  prompt today), usage counts in API responses, `token_id` fidelity for the HTTP backend
+  (ctypes is done).
+- **RKLLM 1.2.3 → 1.3.0 / driver >= 0.9.8 bump** (issue #9): when bumping, re-verify the
+  ctypes structs in `runtime.py` against the matching `rkllm.h`; a mismatched ABI segfaults
+  in `rkllm_init` (see CHANGELOG entry for #18).
 
 Model "download" is resolved: `.rkllm` artifacts are never fetched from HF. The worker
 resolves a local file (`RKLLM_MODEL_PATH`, the exo model dirs, then `~/RKLLAMA/models/`)
