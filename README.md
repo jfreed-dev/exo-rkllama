@@ -25,6 +25,26 @@ exo: Run frontier AI locally. Maintained by [exo labs](https://x.com/exolabs).
 > [`docs/rk-hardware/DEVELOPMENT.md`](docs/rk-hardware/DEVELOPMENT.md). Everything below is
 > upstream exo documentation.
 
+### Validated on hardware (2026-07-03)
+
+exo serves tokens from the RK3588 NPU. Test cluster: 4 x Turing RK1 (32GB) on a
+Turing Pi 2, running Armbian Trixie (vendor kernel 6.1.115, rknpu driver 0.9.8)
+with K3s v1.36.2, exo deployed as a privileged DaemonSet
+([`deploy/rk-k3s/`](deploy/rk-k3s/)).
+
+| Check | Result |
+|---|---|
+| Smoke (streamed chat completion) | PASS, model `llama3.2-3b-rkllm` (w8a8_g128, RKLLM toolkit 1.2.1) |
+| NPU utilization during generation | ~90% on all three NPU cores (`/sys/kernel/debug/rknpu/load`) |
+| Throughput, single node | 3.46 tok/s generate, 27 tok/s prefill (runtime perf counters) |
+| Data-parallel pool | 2 instances of the same model on distinct nodes; 6 concurrent requests split 3/3 by least-in-flight routing |
+
+The NPU path is single-node-per-model by design (RKLLM has no cross-node
+sharding); the cluster scales by running whole models on each node and load
+balancing across them. Models are pre-converted `.rkllm` artifacts placed on the
+nodes; conversions must match the RKLLM runtime line (1.2.x today, see
+[`docs/rk-hardware/DEVELOPMENT.md`](docs/rk-hardware/DEVELOPMENT.md)).
+
 ---
 
 exo connects all your devices into an AI cluster. Not only does exo enable running models larger than would fit on a single device, but with [day-0 support for RDMA over Thunderbolt](https://x.com/exolabs/status/2001817749744476256?s=20), makes models run faster as you add more devices.
