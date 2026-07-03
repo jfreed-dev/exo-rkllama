@@ -17,8 +17,11 @@ ARG RKLLM_VERSION=release-v1.2.3
 # (1.3.x moved it under rkllm-runtime/runtime/).
 ARG RKLLM_RUNTIME_PATH=rkllm-runtime/Linux/librkllm_api/aarch64/librkllmrt.so
 
+# git: uv fetches git dependencies (mflux); cmake/perl: native -sys crates in the
+# exo_rs dependency tree.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends curl ca-certificates build-essential pkg-config \
+  && apt-get install -y --no-install-recommends \
+    curl ca-certificates build-essential pkg-config git cmake perl \
   && rm -rf /var/lib/apt/lists/*
 
 # Rust toolchain: the exo_rs bindings build from source on aarch64.
