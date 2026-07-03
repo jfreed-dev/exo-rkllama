@@ -14,18 +14,21 @@ API_PORT="${API_PORT:-52415}"
 PROMPT="${PROMPT:-Write a 200-word story about a cluster of small computers.}"
 MAX_SAMPLES="${MAX_SAMPLES:-12}"
 
-POD=$(kubectl -n "${NS}" get pods -l app.kubernetes.io/name=exo \
-  -o jsonpath='{.items[0].metadata.name}')
+PODS=$(kubectl -n "${NS}" get pods -l app.kubernetes.io/name=exo \
+  -o jsonpath='{.items[*].metadata.name}')
 NODE_IP=$(kubectl -n "${NS}" get pods -l app.kubernetes.io/name=exo \
   -o jsonpath='{.items[0].status.hostIP}')
 API="http://${NODE_IP}:${API_PORT}"
 
 printf '>> rknpu driver: '
-kubectl -n "${NS}" exec "${POD}" -- cat /sys/kernel/debug/rknpu/version || echo "unavailable"
+kubectl -n "${NS}" exec "${PODS%% *}" -- cat /sys/kernel/debug/rknpu/version || echo "unavailable"
 
+# The instance may live on any labeled node, so sample every pod's NPU.
 sample_npu_load() {
   for _ in $(seq "${MAX_SAMPLES}"); do
-    kubectl -n "${NS}" exec "${POD}" -- cat /sys/kernel/debug/rknpu/load 2>/dev/null || true
+    for pod in ${PODS}; do
+      kubectl -n "${NS}" exec "${pod}" -- cat /sys/kernel/debug/rknpu/load 2>/dev/null || true
+    done
     sleep 1
   done
 }
