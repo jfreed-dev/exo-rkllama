@@ -154,6 +154,14 @@ class SamplingDefaults(SamplingValues):
     non_thinking: SamplingValues | None = None
 
 
+# Backends assigned to cards fetched from HF: everything except RkllmNpu, which
+# needs a pre-converted .rkllm artifact and an explicit card, never a raw
+# safetensors repo.
+FETCHED_CARD_BACKENDS: list[Backend] = [
+    backend for backend in Backend if backend is not Backend.RkllmNpu
+]
+
+
 class ModelCard(FrozenModel):
     model_id: ModelId
     storage_size: Memory
@@ -175,6 +183,15 @@ class ModelCard(FrozenModel):
     is_custom: bool = False
     vision: VisionCardConfig | None = None
     sampling_defaults: SamplingDefaults = Field(default_factory=SamplingDefaults)
+
+    @property
+    def is_rkllm_model(self) -> bool:
+        """True when this card can only run on the Rockchip NPU (RKLLM engine).
+
+        RKLLM cards are hand-written with ``backends = ["RkllmNpu"]``. A card that
+        merely includes RkllmNpu among other backends is not an RKLLM model.
+        """
+        return set(self.backends) == {Backend.RkllmNpu}
 
     @model_validator(mode="after")
     def _autodetect_vision(self) -> "ModelCard":
@@ -256,9 +273,9 @@ class ModelCard(FrozenModel):
             trust_remote_code=False,
             is_custom=True,
             vision=config_data.vision,
-            backends=list(
-                Backend
-            ),  # all backends — we don't know what an arbitrary HF model supports; let placement gate decide
+            # We don't know what an arbitrary HF model supports, so let the
+            # placement gate decide among these.
+            backends=FETCHED_CARD_BACKENDS,
         )
 
 

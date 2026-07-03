@@ -144,7 +144,6 @@ from exo.shared.models.model_cards import (
     ModelTask,
 )
 from exo.shared.tracing import TraceEvent, compute_stats, export_trace, load_trace_file
-from exo.shared.types.backends import Backend
 from exo.shared.types.chunks import (
     ErrorChunk,
     ImageChunk,
@@ -526,7 +525,7 @@ class API:
                 status_code=400, detail=f"Failed to load model card: {exc}"
             ) from exc
         instance_combinations: list[tuple[Sharding, InstanceMeta, int]] = []
-        if Backend.RkllmNpu in model_card.backends:
+        if model_card.is_rkllm_model:
             # RKLLM is whole-model on one NPU; only a single-node pipeline applies.
             instance_combinations.append(
                 (Sharding.Pipeline, InstanceMeta.RkllmSingleNode, 1)
