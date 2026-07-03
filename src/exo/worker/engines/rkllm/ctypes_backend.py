@@ -33,19 +33,23 @@ class RkllmCtypesBackend(RkllmBackend):
             raise RuntimeError("RKLLM ctypes backend used before load()")
         self._cancelled.clear()
         prompt = _prompt_from_params(params)
-        index = 0
-        for fragment in self._runtime.generate_stream(prompt):
+        last_token_id = 0
+        for fragment, token_id in self._runtime.generate_stream(prompt):
             if self._cancelled.is_set():
                 break
-            yield TokenPiece(text=fragment, token_id=index, finished=False)
-            index += 1
+            last_token_id = token_id
+            yield TokenPiece(text=fragment, token_id=token_id, finished=False)
         if not self._cancelled.is_set():
             yield TokenPiece(
-                text="", token_id=index, finished=True, finish_reason="stop"
+                text="", token_id=last_token_id, finished=True, finish_reason="stop"
             )
 
     def cancel(self) -> None:
         self._cancelled.set()
+        # Stop the NPU run too: without rkllm_abort the native thread keeps
+        # generating and its output would interleave into the next request.
+        if self._runtime is not None:
+            self._runtime.abort()
 
     def close(self) -> None:
         if self._runtime is not None:
