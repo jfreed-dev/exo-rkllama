@@ -129,5 +129,11 @@ tests), the upstream `ci-pipeline` (`nix flake check` ×3 platforms + macOS pyte
   `siderolabs/rockchip-rknn` extension and confirm its rknpu driver version (Tier-2 gate).
 - **Tier-2 k8s automation**: privileged exo DaemonSet + `.rkllm` models, NPU smoke/bench,
   driven via `talosctl`/`kubectl`.
-- **Model download**, **`token_id` fidelity (HTTP)**, **ctypes chat templating**, and a
+- **`token_id` fidelity (HTTP)**, **ctypes chat templating**, and a
   **RKLLM 1.2.3 → 1.3.0 / driver ≥ 0.9.8** bump (see the engine package + issues).
+
+Model "download" is resolved: `.rkllm` artifacts are never fetched from HF. The worker
+resolves a local file (`RKLLM_MODEL_PATH`, the exo model dirs, then `~/RKLLAMA/models/`)
+via `engines/rkllm/models.py`; with the HTTP backend a missing local copy is fine (the
+rkllama server owns its files and `load` verifies server-side). Converting and shipping
+the `.rkllm` files to nodes stays a manual/deploy-time step.

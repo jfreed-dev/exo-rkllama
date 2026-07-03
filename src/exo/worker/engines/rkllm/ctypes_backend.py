@@ -5,15 +5,15 @@ model-specific chat template — it builds a minimal generic prompt. Proper temp
 (via the model tokenizer) is a follow-up; the HTTP backend templates server-side.
 """
 
-import os
 import threading
 from collections.abc import Iterable, Iterator
-from pathlib import Path
 
 from exo.shared.models.model_cards import ModelCard
+from exo.shared.types.common import ModelId
 from exo.shared.types.text_generation import TextGenerationTaskParams
 from exo.shared.types.worker.runner_response import ModelLoadingResponse
 from exo.worker.engines.rkllm.backend import RkllmBackend, TokenPiece
+from exo.worker.engines.rkllm.models import RKLLAMA_MODELS_DIR, find_rkllm_model_file
 from exo.worker.engines.rkllm.runtime import RKLLMRuntime
 
 
@@ -53,18 +53,13 @@ class RkllmCtypesBackend(RkllmBackend):
             self._runtime = None
 
 
-def _resolve_model_path(model_id: str) -> str:
-    env_path = os.environ.get("RKLLM_MODEL_PATH")
-    if env_path:
-        return env_path
-    base = Path(os.path.expanduser("~/RKLLAMA/models")) / model_id
-    if base.is_dir():
-        candidates = sorted(base.glob("*.rkllm"))
-        if candidates:
-            return str(candidates[0])
+def _resolve_model_path(model_id: ModelId) -> str:
+    found = find_rkllm_model_file(model_id)
+    if found is not None:
+        return str(found)
     raise RuntimeError(
         f"No .rkllm file for {model_id}; set RKLLM_MODEL_PATH or place the model "
-        f"under ~/RKLLAMA/models/{model_id}/"
+        f"under {RKLLAMA_MODELS_DIR}/{model_id.normalize()}/"
     )
 
 

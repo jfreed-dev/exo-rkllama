@@ -58,6 +58,7 @@ from exo.utils.info_gatherer.info_gatherer import GatheredInfo, InfoGatherer
 from exo.utils.info_gatherer.net_profile import check_reachable
 from exo.utils.keyed_backoff import KeyedBackoff
 from exo.utils.task_group import TaskGroup
+from exo.worker.engines.rkllm.models import resolve_rkllm_download
 from exo.worker.plan import plan
 from exo.worker.runner.supervisor import RunnerSupervisor
 
@@ -234,6 +235,26 @@ class Worker:
                     await self.event_sender.send(
                         TaskStatusUpdated(
                             task_id=task.task_id, task_status=TaskStatus.Complete
+                        )
+                    )
+                case DownloadModel(shard_metadata=shard) if (
+                    shard.model_card.is_rkllm_model
+                ):
+                    # Pre-converted .rkllm artifacts cannot be downloaded from HF;
+                    # resolve a local copy (or defer to the rkllama server) instead.
+                    self._download_backoff.record_attempt(shard.model_card.model_id)
+                    progress = await to_thread.run_sync(
+                        resolve_rkllm_download, self.node_id, shard
+                    )
+                    await self.event_sender.send(
+                        NodeDownloadProgress(download_progress=progress)
+                    )
+                    await self.event_sender.send(
+                        TaskStatusUpdated(
+                            task_id=task.task_id,
+                            task_status=TaskStatus.Complete
+                            if isinstance(progress, DownloadCompleted)
+                            else TaskStatus.Failed,
                         )
                     )
                 case DownloadModel(shard_metadata=shard):

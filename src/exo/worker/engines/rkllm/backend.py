@@ -58,17 +58,24 @@ class RkllmBackend(ABC):
         ...
 
 
-def select_backend() -> RkllmBackend:
-    """Construct the backend named by ``EXO_RKLLM_BACKEND`` (default ``http``)."""
+def backend_choice() -> str:
+    """Return the transport named by ``EXO_RKLLM_BACKEND``: ``http`` or ``ctypes``."""
     choice = os.environ.get("EXO_RKLLM_BACKEND", "http").strip().lower()
-    if choice == "ctypes":
-        from exo.worker.engines.rkllm.ctypes_backend import RkllmCtypesBackend
-
-        return RkllmCtypesBackend()
-    if choice not in ("http", ""):
+    if choice in ("http", ""):
+        return "http"
+    if choice != "ctypes":
         raise ValueError(
             f"Unknown EXO_RKLLM_BACKEND={choice!r}; expected 'http' or 'ctypes'"
         )
+    return choice
+
+
+def select_backend() -> RkllmBackend:
+    """Construct the backend named by ``EXO_RKLLM_BACKEND`` (default ``http``)."""
+    if backend_choice() == "ctypes":
+        from exo.worker.engines.rkllm.ctypes_backend import RkllmCtypesBackend
+
+        return RkllmCtypesBackend()
     from exo.worker.engines.rkllm.http_backend import RkllmHttpBackend
 
     return RkllmHttpBackend()
