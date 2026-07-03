@@ -32,7 +32,9 @@ spec:
         exo.freed.dev/rk-npu: "true"
       containers:
         - name: exo
-          image: ghcr.io/freed-dev-llc/exo-rkllama-rk:latest
+          # Pin to a release tag (immutable), not latest: with IfNotPresent a
+          # cached latest never repulls. Roll forward via kubectl set image.
+          image: ghcr.io/freed-dev-llc/exo-rkllama-rk:rk-v0.1.0
           imagePullPolicy: IfNotPresent
           securityContext:
             privileged: true
