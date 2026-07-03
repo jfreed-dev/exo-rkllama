@@ -1,0 +1,84 @@
+# exo on RK1 NPU nodes (Armbian + K3s) — privileged DaemonSet, one worker per node.
+# See deploy/rk-k3s/README.md and issues #5 (provisioning) / #6 (this automation).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: exo-rk
+  labels:
+    # NPU access needs privileged pods (no device-plugin path yet; see issue #6).
+    pod-security.kubernetes.io/enforce: privileged
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: exo
+  namespace: exo-rk
+  labels:
+    app.kubernetes.io/name: exo
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: exo
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: exo
+    spec:
+      # zenoh peer discovery works like bare metal when pods share the node's
+      # network namespace; it also exposes the API on <node-ip>:52415.
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      nodeSelector:
+        exo.freed.dev/rk-npu: "true"
+      containers:
+        - name: exo
+          image: ghcr.io/freed-dev-llc/exo-rkllama-rk:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          env:
+            - name: EXO_RKLLM_BACKEND
+              value: ctypes
+            - name: RKLLM_LIB_PATH
+              value: /usr/lib/librkllmrt.so
+          ports:
+            - name: api
+              containerPort: 52415
+              protocol: TCP
+          volumeMounts:
+            - name: dev
+              mountPath: /dev
+            - name: sys-kernel-debug
+              mountPath: /sys/kernel/debug
+              readOnly: true
+            - name: rkllm-models
+              # find_rkllm_model_file searches ~/RKLLAMA/models/<model-id>/*.rkllm;
+              # the container runs as root, so HOME is /root.
+              mountPath: /root/RKLLAMA/models
+            - name: exo-state
+              mountPath: /root/.exo
+          readinessProbe:
+            tcpSocket:
+              port: 52415
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 52415
+            initialDelaySeconds: 30
+            periodSeconds: 30
+      volumes:
+        - name: dev
+          hostPath:
+            path: /dev
+        - name: sys-kernel-debug
+          hostPath:
+            path: /sys/kernel/debug
+        - name: rkllm-models
+          hostPath:
+            path: /var/lib/exo/rkllm-models
+            type: DirectoryOrCreate
+        - name: exo-state
+          hostPath:
+            path: /var/lib/exo/state
+            type: DirectoryOrCreate
