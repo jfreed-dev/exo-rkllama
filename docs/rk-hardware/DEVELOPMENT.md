@@ -65,12 +65,12 @@ Caveats:
 - Unit tests import without a built dashboard via `EXO_DASHBOARD_DIR` (the gate sets it).
   Full app runs still need `cd dashboard && npm install && npm run build`.
 
-## Tier-2 testing — on the Turing Pi RK1 cluster (Talos / Kubernetes)
+## Tier-2 testing — on the Turing Pi RK1 cluster (Kubernetes)
 
-The cluster runs **Talos Linux** (immutable, API-driven, Kubernetes-only — no SSH, no
-shell, no package manager), so the NPU path is validated via Kubernetes, **not** by
-installing/running exo on the node directly (an Ansible-over-SSH approach does not apply).
-RKLLM-in-Kubernetes feasibility is confirmed (sources below), but not on stock Talos:
+The cluster has run **Talos Linux** (immutable, API-driven, Kubernetes-only — no SSH, no
+shell, no package manager); the NPU path is validated via Kubernetes either way, **not**
+by installing/running exo on the node directly. RKLLM-in-Kubernetes feasibility is
+confirmed (sources below), but not on stock Talos:
 
 **Verified 2026-07-03: stock Talos cannot run RKLLM (issue #5).** The
 `siderolabs/rockchip-rknn` extension packages exactly one module from the stock mainline
@@ -84,9 +84,10 @@ Talos builds. No community Talos build fills the gap:
 [milas/talos-sbc-rk3588](https://github.com/milas/talos-sbc-rk3588) is mainline-kernel,
 Rock 5A/5B only, and stale (alpha on Talos v1.7.4, 2024).
 
-**Platform options for NPU validation** (decision tracked in issue #5):
+**Platform decision (2026-07-03, issue #5): Armbian + K3s on the RK1 NPU nodes**
+(option 1 below). The options considered:
 
-1. **Armbian + K3s on the RK1s**: vendor kernel with rknpu >= 0.9.8 out of the box; the
+1. **Armbian + K3s on the RK1s** (chosen): vendor kernel with rknpu >= 0.9.8 out of the box; the
    exo DaemonSet manifests are the same (privileged pod + `/dev/rknpu` hostPath). This is
    the path the cluster repo already recommends for NPU work
    ([freed-dev-llc/turing-rk1-cluster](https://github.com/freed-dev-llc/turing-rk1-cluster):
@@ -146,9 +147,10 @@ tests), the upstream `ci-pipeline` (`nix flake check` ×3 platforms + macOS pyte
   (`info_gatherer.py`) to a plugin registry / entry points (the pre-zenoh tree had
   `plugin_discovery.py`) so RK support registers itself instead of editing shared files —
   dropping the merge-conflict surface to ~zero.
-- **Tier-2 platform decision** (issue #5): the verification half is done with a negative
-  result (see Tier-2 section above; `rockchip-rknn` ships the mainline rocket driver, no
-  RKLLM). Pick between Armbian+K3s for NPU nodes and a custom Talos kernel effort.
+- **Tier-2 platform** (issue #5): verification found stock Talos cannot run RKLLM
+  (`rockchip-rknn` ships the mainline rocket driver); decided 2026-07-03 for
+  **Armbian + K3s** on the NPU nodes. Next: provision the RK1s (issue #5), then the
+  K3s DaemonSet automation (issue #6).
 - **Tier-2 k8s automation**: privileged exo DaemonSet + `.rkllm` models, NPU smoke/bench,
   driven via `talosctl`/`kubectl`.
 - **`token_id` fidelity (HTTP)**, **ctypes chat templating**, and a
