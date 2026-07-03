@@ -25,9 +25,10 @@ say "API endpoint: ${API}"
 say "checking NPU device + driver on the node"
 POD=$(kubectl -n "${NS}" get pods -l app.kubernetes.io/name=exo \
   -o jsonpath='{.items[0].metadata.name}')
+# The vendor BSP exposes the NPU as a DRM render node (by-path), not /dev/rknpu.
 kubectl -n "${NS}" exec "${POD}" -- sh -c \
-  'test -e /dev/rknpu && cat /sys/kernel/debug/rknpu/version' ||
-  say "WARNING: /dev/rknpu or rknpu debugfs missing (CPU fallback likely)"
+  'ls /dev/dri/by-path/ 2>/dev/null | grep -q npu && cat /sys/kernel/debug/rknpu/version' ||
+  say "WARNING: NPU DRM node or rknpu debugfs missing (CPU fallback likely)"
 
 say "placing instance for ${MODEL}"
 curl -fsS -X POST "${API}/place_instance" \
@@ -35,7 +36,9 @@ curl -fsS -X POST "${API}/place_instance" \
   -d "{\"model_id\": \"${MODEL}\"}" >/dev/null
 
 say "waiting for instance to become ready"
-curl -fsS "${API}/instance/await?model_id=${MODEL}&timeout_seconds=${TIMEOUT_S}" >/dev/null
+# The await endpoint caps timeout_seconds at 300.
+AWAIT_S=$((TIMEOUT_S < 300 ? TIMEOUT_S : 300))
+curl -fsS "${API}/instance/await?model_id=${MODEL}&timeout_seconds=${AWAIT_S}" >/dev/null
 
 say "requesting a streamed completion"
 RESPONSE=$(curl -fsS -N --max-time 120 "${API}/v1/chat/completions" \

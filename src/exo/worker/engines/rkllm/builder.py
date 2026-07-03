@@ -31,7 +31,10 @@ class RkllmBuilder(Builder):
         self.backend = select_backend()
 
     def load(self, bound_instance: BoundInstance) -> Generator[ModelLoadingResponse]:
-        assert self.backend is not None
+        if self.backend is None:
+            # Single-node instances never receive ConnectToGroup (the worker plan
+            # skips it when the world size is 1), so connect() may not have run.
+            self.backend = select_backend()
         self.shard_metadata = bound_instance.bound_shard
         yield from self.backend.load(bound_instance.bound_shard.model_card)
 
