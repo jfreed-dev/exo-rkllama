@@ -4,7 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from exo.shared.models.model_cards import ModelCard, ModelTask
+from exo.shared.models.model_cards import (
+    FETCHED_CARD_BACKENDS,
+    ModelCard,
+    ModelTask,
+)
 from exo.shared.types.backends import Backend
 from exo.shared.types.common import ModelId, NodeId
 from exo.shared.types.memory import Memory
@@ -151,11 +155,39 @@ def test_card_is_rkllm_model_only_for_rkllm_only_backends() -> None:
 
 
 def test_fetched_card_backends_exclude_rkllm() -> None:
-    # Mirrors the default used by ModelCard.fetch_from_hf: an arbitrary HF
-    # safetensors repo can never run on the RKLLM engine.
-    fetched_defaults = [b for b in Backend if b is not Backend.RkllmNpu]
-    assert not _card(fetched_defaults).is_rkllm_model
-    assert Backend.RkllmNpu not in fetched_defaults
+    # The default used by ModelCard.fetch_from_hf: an arbitrary HF safetensors
+    # repo can never run on the RKLLM engine.
+    assert Backend.RkllmNpu not in FETCHED_CARD_BACKENDS
+    assert not _card(FETCHED_CARD_BACKENDS).is_rkllm_model
+
+
+@pytest.mark.usefixtures("isolated_dirs")
+def test_env_pointing_at_missing_file_fails_loudly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EXO_RKLLM_BACKEND", "ctypes")
+    monkeypatch.setenv("RKLLM_MODEL_PATH", str(tmp_path / "missing.rkllm"))
+
+    with pytest.raises(ValueError, match="RKLLM_MODEL_PATH"):
+        models.find_rkllm_model_file(MODEL_ID)
+
+    progress = models.resolve_rkllm_download(NodeId(), _shard([Backend.RkllmNpu]))
+    assert isinstance(progress, DownloadFailed)
+    assert "RKLLM_MODEL_PATH" in progress.error_message
+    assert "does not point at" in progress.error_message
+
+
+@pytest.mark.usefixtures("isolated_dirs")
+def test_invalid_backend_env_reports_real_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EXO_RKLLM_BACKEND", "htpp")
+
+    progress = models.resolve_rkllm_download(NodeId(), _shard([Backend.RkllmNpu]))
+
+    assert isinstance(progress, DownloadFailed)
+    assert "EXO_RKLLM_BACKEND" in progress.error_message
 
 
 def test_bound_instance_dispatch_follows_instance_type() -> None:

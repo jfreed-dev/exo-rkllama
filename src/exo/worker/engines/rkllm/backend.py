@@ -14,6 +14,7 @@ import os
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
+from typing import Literal
 
 from exo.shared.models.model_cards import ModelCard
 from exo.shared.types.text_generation import TextGenerationTaskParams
@@ -58,16 +59,16 @@ class RkllmBackend(ABC):
         ...
 
 
-def backend_choice() -> str:
+def backend_choice() -> Literal["http", "ctypes"]:
     """Return the transport named by ``EXO_RKLLM_BACKEND``: ``http`` or ``ctypes``."""
     choice = os.environ.get("EXO_RKLLM_BACKEND", "http").strip().lower()
     if choice in ("http", ""):
         return "http"
-    if choice != "ctypes":
-        raise ValueError(
-            f"Unknown EXO_RKLLM_BACKEND={choice!r}; expected 'http' or 'ctypes'"
-        )
-    return choice
+    if choice == "ctypes":
+        return "ctypes"
+    raise ValueError(
+        f"Unknown EXO_RKLLM_BACKEND={choice!r}; expected 'http' or 'ctypes'"
+    )
 
 
 def select_backend() -> RkllmBackend:

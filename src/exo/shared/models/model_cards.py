@@ -154,6 +154,14 @@ class SamplingDefaults(SamplingValues):
     non_thinking: SamplingValues | None = None
 
 
+# Backends assigned to cards fetched from HF: everything except RkllmNpu, which
+# needs a pre-converted .rkllm artifact and an explicit card, never a raw
+# safetensors repo.
+FETCHED_CARD_BACKENDS: list[Backend] = [
+    backend for backend in Backend if backend is not Backend.RkllmNpu
+]
+
+
 class ModelCard(FrozenModel):
     model_id: ModelId
     storage_size: Memory
@@ -265,13 +273,9 @@ class ModelCard(FrozenModel):
             trust_remote_code=False,
             is_custom=True,
             vision=config_data.vision,
-            # All backends except RkllmNpu: we don't know what an arbitrary HF model
-            # supports, so let the placement gate decide. RKLLM is excluded because it
-            # needs a pre-converted .rkllm artifact and an explicit card, never a raw
-            # safetensors repo.
-            backends=[
-                backend for backend in Backend if backend is not Backend.RkllmNpu
-            ],
+            # We don't know what an arbitrary HF model supports, so let the
+            # placement gate decide among these.
+            backends=FETCHED_CARD_BACKENDS,
         )
 
 

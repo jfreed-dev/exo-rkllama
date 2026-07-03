@@ -16,8 +16,10 @@ from exo.shared.types.worker.shards import ShardMetadata
 from exo.worker.engines.rkllm.backend import backend_choice
 
 # Default models directory of the rkllama server; the ctypes backend uses the same
-# convention (one directory per model, containing the .rkllm file).
-RKLLAMA_MODELS_DIR = Path("~/RKLLAMA/models").expanduser()
+# convention (one directory per model, containing the .rkllm file). os.path.expanduser
+# never raises: with no resolvable home it leaves the path unchanged (unlike
+# Path.expanduser), and this module is imported by every worker.
+RKLLAMA_MODELS_DIR = Path(os.path.expanduser("~/RKLLAMA/models"))
 
 
 def find_rkllm_model_file(model_id: ModelId) -> Path | None:
@@ -26,10 +28,19 @@ def find_rkllm_model_file(model_id: ModelId) -> Path | None:
     Search order: ``RKLLM_MODEL_PATH`` (points at the file itself), the exo model
     directories, then the rkllama models directory. Model directories are named by
     the normalized model id (slashes become ``--``).
+
+    Raises ``ValueError`` when ``RKLLM_MODEL_PATH`` is set but does not point at a
+    file, so a typo'd or unmounted override fails loudly instead of silently falling
+    back to a different artifact.
     """
     env_path = os.environ.get("RKLLM_MODEL_PATH")
-    if env_path and Path(env_path).is_file():
-        return Path(env_path)
+    if env_path:
+        path = Path(env_path)
+        if not path.is_file():
+            raise ValueError(
+                f"RKLLM_MODEL_PATH={env_path!r} does not point at a .rkllm file"
+            )
+        return path
     for base in (*EXO_MODELS_READ_ONLY_DIRS, *EXO_MODELS_DIRS, RKLLAMA_MODELS_DIR):
         candidate = base / model_id.normalize()
         if candidate.is_dir():
@@ -47,9 +58,19 @@ def resolve_rkllm_download(
     A local ``.rkllm`` file marks the model complete. Without one, the HTTP backend
     still completes (the rkllama server owns its model files and ``load`` verifies
     the model exists server-side), while the ctypes backend fails with instructions.
+    A bad ``RKLLM_MODEL_PATH`` or ``EXO_RKLLM_BACKEND`` value fails with the actual
+    configuration error rather than a missing-file message.
     """
     model_card = shard_metadata.model_card
-    found = find_rkllm_model_file(model_card.model_id)
+    try:
+        found = find_rkllm_model_file(model_card.model_id)
+        transport = backend_choice()
+    except ValueError as error:
+        return DownloadFailed(
+            node_id=node_id,
+            shard_metadata=shard_metadata,
+            error_message=str(error),
+        )
     if found is not None:
         return DownloadCompleted(
             node_id=node_id,
@@ -59,10 +80,6 @@ def resolve_rkllm_download(
             # exo did not download this artifact and must never delete it.
             read_only=True,
         )
-    try:
-        transport = backend_choice()
-    except ValueError:
-        transport = "ctypes"  # invalid env: fall through to the actionable error
     if transport == "http":
         return DownloadCompleted(
             node_id=node_id,
@@ -76,6 +93,7 @@ def resolve_rkllm_download(
         error_message=(
             f"No .rkllm file found for {model_card.model_id}. Place the pre-converted "
             f"model under {RKLLAMA_MODELS_DIR}/{model_card.model_id.normalize()}/ or an "
-            "exo models directory, or set RKLLM_MODEL_PATH to the .rkllm file."
+            "exo models directory (or set RKLLM_MODEL_PATH to the file), then relaunch "
+            "the model instance or restart exo on this node to retry."
         ),
     )

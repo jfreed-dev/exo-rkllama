@@ -317,6 +317,14 @@ class DownloadCoordinator:
         self.active_downloads[model_id] = scope
 
     async def _delete_download(self, model_id: ModelId) -> None:
+        # RKLLM artifacts are hand-placed, never downloaded by exo. The worker's
+        # read-only completion event never reaches this coordinator's local
+        # tracking, so guard by card instead of download_status.
+        card = model_cards.card_cache.get(model_id)
+        if card is not None and card.is_rkllm_model:
+            logger.warning(f"Refusing to delete hand-placed RKLLM model {model_id}")
+            return
+
         # Protect read-only models from deletion
         if model_id in self.download_status:
             current = self.download_status[model_id]

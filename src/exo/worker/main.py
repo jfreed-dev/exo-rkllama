@@ -51,7 +51,7 @@ from exo.shared.types.tasks import (
 from exo.shared.types.text_generation import Base64Image, Base64ImageHash
 from exo.shared.types.topology import Connection, SocketConnection
 from exo.shared.types.worker.downloads import DownloadCompleted
-from exo.shared.types.worker.instances import InstanceId
+from exo.shared.types.worker.instances import InstanceId, RkllmSingleNodeInstance
 from exo.shared.types.worker.runners import RunnerId
 from exo.utils.channels import Receiver, Sender, channel
 from exo.utils.info_gatherer.info_gatherer import GatheredInfo, InfoGatherer
@@ -237,11 +237,14 @@ class Worker:
                             task_id=task.task_id, task_status=TaskStatus.Complete
                         )
                     )
-                case DownloadModel(shard_metadata=shard) if (
-                    shard.model_card.is_rkllm_model
+                case DownloadModel(shard_metadata=shard) if isinstance(
+                    self.state.instances.get(task.instance_id),
+                    RkllmSingleNodeInstance,
                 ):
-                    # Pre-converted .rkllm artifacts cannot be downloaded from HF;
-                    # resolve a local copy (or defer to the rkllama server) instead.
+                    # Same predicate as engine dispatch (bootstrap): the placed
+                    # instance type decides. Pre-converted .rkllm artifacts cannot
+                    # be downloaded from HF; resolve a local copy (or defer to the
+                    # rkllama server) instead.
                     self._download_backoff.record_attempt(shard.model_card.model_id)
                     progress = await to_thread.run_sync(
                         resolve_rkllm_download, self.node_id, shard
