@@ -65,26 +65,48 @@ Caveats:
 - Unit tests import without a built dashboard via `EXO_DASHBOARD_DIR` (the gate sets it).
   Full app runs still need `cd dashboard && npm install && npm run build`.
 
-## Tier-2 testing — on the Turing Pi RK1 cluster (Talos / Kubernetes)
+## Tier-2 testing — on the Turing Pi RK1 cluster (Kubernetes)
 
-The cluster runs **Talos Linux** (immutable, API-driven, Kubernetes-only — no SSH, no
-shell, no package manager), so the NPU path is validated via Kubernetes, **not** by
-installing/running exo on the node directly (an Ansible-over-SSH approach does not apply).
-Feasibility is confirmed (sources below).
+The cluster has run **Talos Linux** (immutable, API-driven, Kubernetes-only — no SSH, no
+shell, no package manager); the NPU path is validated via Kubernetes either way, **not**
+by installing/running exo on the node directly. RKLLM-in-Kubernetes feasibility is
+confirmed (sources below), but not on stock Talos:
 
-**Gating item — the Talos image must include the NPU driver.** Stock Talos has no RK3588
-NPU support. Build a [Talos Image Factory](https://factory.talos.dev) image for **Turing
-RK1** (the `siderolabs/sbc-rockchip` overlay supports `turingrk1`; Talos ≥ v1.10 added
-RK3588 kernel support) **with the `siderolabs/rockchip-rknn` system extension**
-(`ghcr.io/siderolabs/rockchip-rknn`), which ships the `rknpu` kernel modules. **Verify the
-extension's driver is ≥ 0.9.6 (ideally 0.9.8)** for RKLLM — the one unverified dependency.
+**Verified 2026-07-03: stock Talos cannot run RKLLM (issue #5).** The
+`siderolabs/rockchip-rknn` extension packages exactly one module from the stock mainline
+Talos kernel: `drivers/accel/rocket/rocket.ko` (see the extension's `files/modules.txt`
+in [siderolabs/extensions](https://github.com/siderolabs/extensions), `drm/rockship-rknn/`).
+That is the open "rocket" accel driver (`/dev/accel/accel0`, Mesa Teflon, TFLite-class
+CNNs only). RKLLM's `librkllmrt` requires Rockchip's downstream `rknpu` driver
+(`/dev/rknpu`, `/sys/kernel/debug/rknpu/version` >= 0.9.6, 0.9.8 for RKLLM 1.3), which
+ships only for the vendor 5.10/6.1 kernels and does not exist for the mainline kernels
+Talos builds. No community Talos build fills the gap:
+[milas/talos-sbc-rk3588](https://github.com/milas/talos-sbc-rk3588) is mainline-kernel,
+Rock 5A/5B only, and stale (alpha on Talos v1.7.4, 2024).
 
-**Deploy model.** exo runs as a **privileged DaemonSet** (one worker per RK1 node). NPU
-access in a pod needs `securityContext.privileged: true` and a host `/dev` (or
-`/dev/rknpu`) mount — a non-privileged device-plugin path currently falls back to CPU.
-`librkllmrt.so` + the `.rkllm` models ship in the image (or a PVC): use
-`EXO_RKLLM_BACKEND=ctypes` with `RKLLM_MODEL_PATH`, or run `rkllama` as a sidecar for the
-HTTP backend. Talos Pod Security must allow privileged in the namespace.
+**Platform decision (2026-07-03, issue #5): Armbian + K3s on the RK1 NPU nodes**
+(option 1 below). The options considered:
+
+1. **Armbian + K3s on the RK1s** (chosen): vendor kernel with rknpu >= 0.9.8 out of the box; the
+   exo DaemonSet manifests are the same (privileged pod + `/dev/rknpu` hostPath). This is
+   the path the cluster repo already recommends for NPU work
+   ([freed-dev-llc/turing-rk1-cluster](https://github.com/freed-dev-llc/turing-rk1-cluster):
+   `docs/COMPARISON.md`, `docs/INSTALLATION-K3S.md`; its `talos-schematic.yaml` records the
+   same rocket-vs-rknpu finding).
+2. **Custom Talos kernel or extension carrying the downstream rknpu driver**: means
+   porting a 5.10/6.1 vendor driver to Talos's mainline kernel and revalidating the
+   closed `librkllmrt` ABI against it, redone per Talos release. Substantial kernel work
+   with no community precedent.
+3. **Stay on Talos with rocket/Teflon only**: keeps the cluster immutable but caps the
+   NPU at TFLite CNNs; exo's RKLLM engine cannot run on this cluster.
+
+**Deploy model** (applies to either Kubernetes flavor). exo runs as a **privileged
+DaemonSet** (one worker per RK1 node). NPU access in a pod needs
+`securityContext.privileged: true` and a host `/dev` (or `/dev/rknpu`) mount — a
+non-privileged device-plugin path currently falls back to CPU. `librkllmrt.so` + the
+`.rkllm` models ship in the image (or a PVC): use `EXO_RKLLM_BACKEND=ctypes` with
+`RKLLM_MODEL_PATH`, or run `rkllama` as a sidecar for the HTTP backend. Pod Security must
+allow privileged in the namespace.
 
 **Validate.** Confirm the NPU is actually used (not CPU fallback) — tok/s + `librkllmrt`/
 driver versions — then confirm data-parallel routing across nodes (one whole model each).
@@ -125,8 +147,10 @@ tests), the upstream `ci-pipeline` (`nix flake check` ×3 platforms + macOS pyte
   (`info_gatherer.py`) to a plugin registry / entry points (the pre-zenoh tree had
   `plugin_discovery.py`) so RK support registers itself instead of editing shared files —
   dropping the merge-conflict surface to ~zero.
-- **Talos NPU image**: build/verify a Turing RK1 Image Factory image with the
-  `siderolabs/rockchip-rknn` extension and confirm its rknpu driver version (Tier-2 gate).
+- **Tier-2 platform** (issue #5): verification found stock Talos cannot run RKLLM
+  (`rockchip-rknn` ships the mainline rocket driver); decided 2026-07-03 for
+  **Armbian + K3s** on the NPU nodes. Next: provision the RK1s (issue #5), then the
+  K3s DaemonSet automation (issue #6).
 - **Tier-2 k8s automation**: privileged exo DaemonSet + `.rkllm` models, NPU smoke/bench,
   driven via `talosctl`/`kubectl`.
 - **`token_id` fidelity (HTTP)**, **ctypes chat templating**, and a
