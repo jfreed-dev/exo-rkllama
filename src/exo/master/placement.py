@@ -196,6 +196,23 @@ def place_instance(
                 "RKLLM runs a whole model on one NPU node; no single-node cycle has "
                 f"enough memory for {command.model_card.model_id}"
             )
+        # Anti-affinity for the data-parallel pool: replicas of the same model
+        # spread across nodes. Without this, the download-score tiebreak stacks
+        # every replica onto the first node that resolved the artifact. Only
+        # applied when a free node remains; otherwise co-locating is allowed.
+        nodes_hosting_model = {
+            node_id
+            for instance in current_instances.values()
+            if instance.shard_assignments.model_id == command.model_card.model_id
+            for node_id in instance.shard_assignments.node_to_runner
+        }
+        cycles_off_hosting_nodes = [
+            cycle
+            for cycle in cycles_with_sufficient_memory
+            if not (set(cycle.node_ids) & nodes_hosting_model)
+        ]
+        if cycles_off_hosting_nodes:
+            cycles_with_sufficient_memory = cycles_off_hosting_nodes
 
     smallest_cycles = get_smallest_cycles(cycles_with_sufficient_memory)
 

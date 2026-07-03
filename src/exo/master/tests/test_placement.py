@@ -1113,3 +1113,48 @@ def test_multi_backend_card_is_not_pinned_to_rkllm(model_card: ModelCard) -> Non
     assert len(placements) == 1
     instance = next(iter(placements.values()))
     assert isinstance(instance, MlxRingInstance)
+
+
+def test_rkllm_second_instance_spreads_to_free_node(model_card: ModelCard) -> None:
+    # Data-parallel pool: a second instance of the same RKLLM model must not
+    # stack onto the node already hosting it while a free NPU node exists.
+    topology = Topology()
+    node_a, node_b = NodeId(), NodeId()
+    topology.add_node(node_a)
+    topology.add_node(node_b)
+    node_memory = {
+        node_a: create_node_memory(1000 * 1024),
+        node_b: create_node_memory(1000 * 1024),
+    }
+    node_network = {node_a: create_node_network(), node_b: create_node_network()}
+    node_backends = {
+        node_a: [Backend.MlxCpu, Backend.RkllmNpu],
+        node_b: [Backend.MlxCpu, Backend.RkllmNpu],
+    }
+    rkllm_card = model_card.model_copy(
+        update={"backends": [Backend.RkllmNpu], "supports_tensor": False}
+    )
+    cic = PlaceInstance(
+        command_id=CommandId(),
+        model_card=rkllm_card,
+        sharding=Sharding.Pipeline,
+        instance_meta=InstanceMeta.RkllmSingleNode,
+        min_nodes=1,
+    )
+
+    first = place_instance(cic, topology, {}, node_memory, node_network, node_backends)
+    second = place_instance(
+        cic, topology, first, node_memory, node_network, node_backends
+    )
+
+    new_instance = next(
+        instance for instance_id, instance in second.items() if instance_id not in first
+    )
+    first_nodes = {
+        node_id
+        for instance in first.values()
+        for node_id in instance.shard_assignments.node_to_runner
+    }
+    second_nodes = set(new_instance.shard_assignments.node_to_runner)
+    assert isinstance(new_instance, RkllmSingleNodeInstance)
+    assert not (first_nodes & second_nodes), "replica stacked onto the same node"
