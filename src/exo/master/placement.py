@@ -117,8 +117,10 @@ def place_instance(
     node_rdma_ctl: Mapping[NodeId, NodeRdmaCtlStatus] | None = None,
 ) -> dict[InstanceId, Instance]:
     # RKLLM runs a whole model on a single NPU (no sharding across nodes), so force
-    # a single-node pipeline placement regardless of what was requested.
-    if Backend.RkllmNpu in command.model_card.backends:
+    # a single-node pipeline placement regardless of what was requested. Only cards
+    # whose sole backend is RkllmNpu are pinned; cards that could also run on MLX
+    # keep their requested placement.
+    if command.model_card.is_rkllm_model:
         command = command.model_copy(
             update={
                 "instance_meta": InstanceMeta.RkllmSingleNode,

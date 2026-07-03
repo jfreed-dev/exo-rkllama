@@ -3,7 +3,6 @@ from enum import Enum
 from pydantic import model_validator
 
 from exo.shared.models.model_cards import ModelTask
-from exo.shared.types.backends import Backend
 from exo.shared.types.common import Host, Id, NodeId
 from exo.shared.types.worker.runners import RunnerId, ShardAssignments, ShardMetadata
 from exo.utils.pydantic_ext import FrozenModel, TaggedModel
@@ -68,7 +67,7 @@ class BoundInstance(FrozenModel):
 
     @property
     def is_rkllm_model(self) -> bool:
-        return Backend.RkllmNpu in self.bound_shard.model_card.backends
+        return isinstance(self.instance, RkllmSingleNodeInstance)
 
     @model_validator(mode="after")
     def validate_shard_exists(self) -> "BoundInstance":

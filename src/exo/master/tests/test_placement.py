@@ -48,6 +48,7 @@ from exo.shared.types.worker.instances import (
     InstanceMeta,
     MlxJacclInstance,
     MlxRingInstance,
+    RkllmSingleNodeInstance,
 )
 from exo.shared.types.worker.runners import ShardAssignments
 from exo.shared.types.worker.shards import PipelineShardMetadata, Sharding
@@ -1056,3 +1057,59 @@ def test_mlx_jaccl_rejects_cuda_only_cycle(model_card: ModelCard):
             node_backends,
             node_rdma_ctl=node_rdma_ctl,
         )
+
+
+def test_rkllm_only_card_pinned_to_single_node_npu(model_card: ModelCard) -> None:
+    topology = Topology()
+    node_id = NodeId()
+    topology.add_node(node_id)
+    node_memory = {node_id: create_node_memory(1000 * 1024)}
+    node_network = {node_id: create_node_network()}
+    node_backends = {node_id: [Backend.MlxCpu, Backend.RkllmNpu]}
+    rkllm_card = model_card.model_copy(
+        update={"backends": [Backend.RkllmNpu], "supports_tensor": False}
+    )
+
+    cic = PlaceInstance(
+        command_id=CommandId(),
+        model_card=rkllm_card,
+        # Deliberately request an MLX placement: the RKLLM pin must override it.
+        sharding=Sharding.Pipeline,
+        instance_meta=InstanceMeta.MlxRing,
+        min_nodes=1,
+    )
+    placements = place_instance(
+        cic, topology, {}, node_memory, node_network, node_backends
+    )
+
+    assert len(placements) == 1
+    instance = next(iter(placements.values()))
+    assert isinstance(instance, RkllmSingleNodeInstance)
+    assert len(instance.shard_assignments.node_to_runner) == 1
+
+
+def test_multi_backend_card_is_not_pinned_to_rkllm(model_card: ModelCard) -> None:
+    # Regression: a custom card fetched from HF used to list every backend including
+    # RkllmNpu, which force-pinned it to the RKLLM single-node path and made it
+    # unplaceable on clusters without an NPU node.
+    topology = Topology()
+    node_id = NodeId()
+    topology.add_node(node_id)
+    node_memory = {node_id: create_node_memory(1000 * 1024)}
+    node_network = {node_id: create_node_network()}
+    permissive_card = model_card.model_copy(update={"backends": list(Backend)})
+
+    cic = PlaceInstance(
+        command_id=CommandId(),
+        model_card=permissive_card,
+        sharding=Sharding.Pipeline,
+        instance_meta=InstanceMeta.MlxRing,
+        min_nodes=1,
+    )
+    placements = place_instance(
+        cic, topology, {}, node_memory, node_network, _metal_only(node_memory)
+    )
+
+    assert len(placements) == 1
+    instance = next(iter(placements.values()))
+    assert isinstance(instance, MlxRingInstance)
