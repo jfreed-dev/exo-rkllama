@@ -701,7 +701,7 @@
         <input
           type="search"
           class="flex-1 bg-transparent border-none outline-none text-sm font-mono text-white placeholder-white/40"
-          placeholder="Search mlx-community models..."
+          placeholder="Search HuggingFace models..."
           value={hfSearchQuery}
           oninput={(e) => handleHfSearchInput(e.currentTarget.value)}
         />
@@ -801,7 +801,7 @@
                 {#if hfSearchQuery.length >= 2}
                   Search results for "{hfSearchQuery}"
                 {:else}
-                  Trending on mlx-community
+                  Trending models
                 {/if}
               </span>
             </div>
