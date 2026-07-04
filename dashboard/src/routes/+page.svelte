@@ -562,9 +562,14 @@
     }
   });
 
-  // Recommended models for onboarding: 2 large, 2 medium, 2 small
-  // Always includes Llama-3.2-3B-4bit as a fast-loading small option
-  const PINNED_ONBOARDING_MODEL = "mlx-community/Llama-3.2-3B-Instruct-4bit";
+  // Recommended models for onboarding: 2 large, 2 medium, 2 small. The small pin
+  // is a fast-loading 3B: the RKLLM card on a Rockchip NPU host (where the catalog
+  // is RKLLM-only), otherwise the mlx-community build.
+  const PINNED_ONBOARDING_MODEL = $derived(
+    models.some((m) => m.id === "llama3.2-3b-rkllm")
+      ? "llama3.2-3b-rkllm"
+      : "mlx-community/Llama-3.2-3B-Instruct-4bit",
+  );
   const onboardingModels = $derived.by(() => {
     if (models.length === 0) return [];
     const sorted = [...models]
