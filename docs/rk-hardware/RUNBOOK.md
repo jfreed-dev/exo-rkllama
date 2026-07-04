@@ -145,7 +145,9 @@ ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes root@10.10.88.73 \
 ```
 
 New models additionally need a card in `resources/inference_model_cards/`
-(`backends = ["RkllmNpu"]`; see `llama3.2-3b-rkllm.toml` as the template).
+(`backends = ["RkllmNpu"]`; see `llama3.2-3b-rkllm.toml` as the template). For the
+card fields, where the card must live (custom cards get pruned), and the
+launch/preload flow, see [`MODELS.md`](MODELS.md).
 
 ## 6. Deploy exo and validate
 
