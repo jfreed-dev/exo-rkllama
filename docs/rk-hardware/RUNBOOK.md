@@ -8,6 +8,31 @@ run against the real cluster. Assumes a workstation on the same LAN with `ssh`,
 Naming used throughout: BMC at `turing-bmc` (10.10.88.70), nodes `rk1-1` through
 `rk1-4` (10.10.88.73 through .76 via DHCP leases keyed to the boards' MACs).
 
+## Different hardware
+
+This runbook targets a Turing Pi 2 with RK1 modules, but nothing about exo or the
+RKLLM engine is specific to that board. The only hard requirement is a Rockchip
+**RK3588 or RK3576** SoC running a **vendor 6.1 BSP kernel with the rknpu driver**
+(`/dev/rknpu` present, `cat /sys/kernel/debug/rknpu/version` >= 0.9.6; 0.9.8 for
+RKLLM 1.3). Mainline/`current`/`edge` kernels and stock Talos do not carry it.
+
+Sections **5-7 and everything under `deploy/rk-k3s/` are hardware-agnostic**: once a
+node has the driver and is in a K3s cluster, placing `.rkllm` files, applying the
+DaemonSet, and launching instances are identical on any board. What changes per board
+is the bring-up in **sections 1-4**:
+
+- **The Armbian/vendor image** (section 1) is board-specific. Use your board's vendor
+  6.1 image (Orange Pi 5, Radxa Rock 5, NanoPi R6, etc.); keep the preseed idea.
+- **Flashing** (section 2) uses the Turing Pi BMC and `tpi`. On boards without a BMC,
+  write the image to SD/eMMC directly (`dd`, balenaEtcher, or `rkdeveloptool` for
+  maskrom mode) and skip to section 3.
+- **First-boot and K3s** (sections 3-4) are generic Linux/K3s steps; adjust IPs and
+  node names. Label each NPU node `exo.freed.dev/rk-npu=true` so the DaemonSet
+  schedules there.
+
+A single-node board works too: run K3s as a one-node cluster and one exo instance.
+The `min_nodes`/parallelism notes just collapse to that node.
+
 ## 1. Prepare the Armbian image (once per image refresh)
 
 Use the **vendor kernel** build. The mainline (`current`/`edge`) kernels lack the
