@@ -3,7 +3,20 @@
 Deltas of the `rk-integration` line against upstream `exo-explore/exo`, newest first.
 PR numbers reference [freed-dev-llc/exo-rkllama](https://github.com/freed-dev-llc/exo-rkllama).
 
-## 2026-07-04: rk-v0.2.0 — NPU-gated model selection
+## 2026-07-04: rk-v0.2.1 (NPU onboarding and docs)
+
+Point release: `ghcr.io/freed-dev-llc/exo-rkllama-rk:rk-v0.2.1` (arm64), same
+upstream base as rk-v0.2.0 (`exo-explore/exo` `54596e6d`).
+
+- **#29**: the onboarding wizard pins the bundled `llama3.2-3b-rkllm` card as its
+  fast-loading small option on a Rockchip NPU host (the catalog is RKLLM-only
+  there, so the previous mlx-community pin was a dead id), falling back to the mlx
+  build off-NPU.
+- **#27, #28**: model-onboarding guide (`docs/rk-hardware/MODELS.md`), un-drafted
+  the deploy README, shipped `exo-service.yaml` + a self-healing preload CronJob in
+  `deploy/rk-k3s/`, and a "different hardware" note in the RUNBOOK.
+
+## 2026-07-04: rk-v0.2.0 (NPU-gated model selection)
 
 Second release: `ghcr.io/freed-dev-llc/exo-rkllama-rk:rk-v0.2.0` (arm64), same
 upstream base as rk-v0.1.0 (`exo-explore/exo` `54596e6d`).
