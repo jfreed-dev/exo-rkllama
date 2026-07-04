@@ -6,6 +6,7 @@ import random
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
 from datetime import datetime, timezone
+from functools import cache
 from http import HTTPStatus
 from pathlib import Path
 from typing import Annotated, Any, Literal, cast
@@ -206,9 +207,17 @@ from exo.utils.channels import Receiver, Sender, channel
 from exo.utils.disk_event_log import DiskEventLog
 from exo.utils.power_sampler import PowerSampler
 from exo.utils.task_group import TaskGroup
+from exo.worker.engines.rkllm.detection import detect_rockchip_npu
 
 _API_EVENT_LOG_DIR = EXO_EVENT_LOG_DIR / "api"
 ONBOARDING_COMPLETE_FILE = EXO_CACHE_HOME / "onboarding_complete"
+
+
+@cache
+def host_runs_on_rockchip_npu() -> bool:
+    """Whether this API node is a Rockchip RK3588/RK3576 NPU host, which can only run
+    RKLLM-engine models. Cached because the host hardware does not change at runtime."""
+    return detect_rockchip_npu()
 
 
 def _format_to_content_type(image_format: Literal["png", "jpeg", "webp"] | None) -> str:
@@ -1790,8 +1799,16 @@ class API:
         return total_available
 
     async def get_models(self, status: str | None = Query(default=None)) -> ModelList:
-        """Returns list of available models, optionally filtered by being downloaded."""
+        """Returns list of available models, optionally filtered by being downloaded.
+
+        On a Rockchip NPU host the catalog is limited to RKLLM-engine models, since the
+        NPU cannot run MLX or other-backend cards. Non-RKLLM models remain reachable via
+        ``search_models``.
+        """
         cards = await model_cards.card_cache.list_all()
+
+        if host_runs_on_rockchip_npu():
+            cards = [card for card in cards if card.is_rkllm_model]
 
         if status == "downloaded":
             downloaded_model_ids: set[str] = set()
@@ -1876,7 +1893,11 @@ class API:
     async def search_models(
         self, query: str = "", limit: int = 20
     ) -> list[HuggingFaceSearchResult]:
-        """Search HuggingFace Hub — tries mlx-community first, falls back to all of HuggingFace."""
+        """Search HuggingFace Hub. On a Rockchip NPU host, prefer models in the ``rkllm``
+        library (the only ones the RK3588/RK3576 NPU can run); elsewhere prefer
+        mlx-community. Both fall back to searching all of HuggingFace when the preferred
+        set is empty.
+        """
         from huggingface_hub import ModelInfo, list_models
 
         def _to_results(models: Iterable[ModelInfo]) -> list[HuggingFaceSearchResult]:
@@ -1892,17 +1913,26 @@ class API:
                 for m in models
             ]
 
-        # Search mlx-community first
-        mlx_results = _to_results(
-            list_models(
-                search=query or None,
-                author="mlx-community",
-                sort="downloads",
-                limit=limit,
+        if host_runs_on_rockchip_npu():
+            preferred = _to_results(
+                list_models(
+                    search=query or None,
+                    filter="rkllm",
+                    sort="downloads",
+                    limit=limit,
+                )
             )
-        )
-        if mlx_results:
-            return mlx_results
+        else:
+            preferred = _to_results(
+                list_models(
+                    search=query or None,
+                    author="mlx-community",
+                    sort="downloads",
+                    limit=limit,
+                )
+            )
+        if preferred:
+            return preferred
 
         # Fall back to searching all of HuggingFace
         return _to_results(
