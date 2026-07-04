@@ -1,0 +1,21 @@
+---
+# ClusterIP Service for the exo API/dashboard. The DaemonSet uses hostNetwork, so
+# each pod's IP is its node IP and this Service load-balances requests across all
+# NPU nodes. Gives in-cluster clients (e.g. the preload CronJob) one stable name,
+# and a single target to front with an Ingress if you want the UI on one URL.
+apiVersion: v1
+kind: Service
+metadata:
+  name: exo
+  namespace: exo-rk
+  labels:
+    app.kubernetes.io/name: exo
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: exo
+  ports:
+    - name: api
+      port: 52415
+      targetPort: 52415
+      protocol: TCP

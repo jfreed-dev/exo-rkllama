@@ -1,14 +1,15 @@
 # exo on RK1 NPU nodes (Armbian + K3s)
 
-Deployment draft for Tier-2 on-hardware testing (issues #5, #6). Runs exo as a
-privileged DaemonSet, one worker per RK1 node, with the RKLLM ctypes backend talking
-to the NPU through `/dev/rknpu`.
+Runs exo as a privileged DaemonSet, one worker per RK1 node, with the RKLLM ctypes
+backend talking to the NPU through `/dev/rknpu`.
 
-**Status: draft, not yet run on hardware.** The manifests and scripts are Tier-1
-checked (yamllint, shfmt, shellcheck-clean); the Dockerfile has not been built for
-aarch64 yet and the `RKLLM_RUNTIME_PATH` build arg must be verified against the
-pinned airockchip/rknn-llm release before the first build. Validated pieces get
-promoted out of draft status as issue #6 progresses.
+**Status: validated on hardware.** Shipped as
+`ghcr.io/freed-dev-llc/exo-rkllama-rk:rk-v0.2.0` (arm64) and running on a 4-node
+Turing Pi 2 RK1 cluster (Armbian Trixie, vendor kernel 6.1.115, rknpu driver 0.9.8,
+K3s v1.36.2). For the end-to-end bring-up from bare metal see
+[`../../docs/rk-hardware/RUNBOOK.md`](../../docs/rk-hardware/RUNBOOK.md); for adding
+and running your own models see
+[`../../docs/rk-hardware/MODELS.md`](../../docs/rk-hardware/MODELS.md).
 
 ## Prerequisites
 
