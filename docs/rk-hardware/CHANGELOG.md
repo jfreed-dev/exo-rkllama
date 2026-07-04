@@ -3,6 +3,22 @@
 Deltas of the `rk-integration` line against upstream `exo-explore/exo`, newest first.
 PR numbers reference [freed-dev-llc/exo-rkllama](https://github.com/freed-dev-llc/exo-rkllama).
 
+## 2026-07-04: rk-v0.2.0 — NPU-gated model selection
+
+Second release: `ghcr.io/freed-dev-llc/exo-rkllama-rk:rk-v0.2.0` (arm64), same
+upstream base as rk-v0.1.0 (`exo-explore/exo` `54596e6d`).
+
+- **#24**: NPU-gated model catalog and search. The catalog (`/models`,
+  `/v1/models`) and HuggingFace search (`/models/search`) defaulted to
+  mlx-community, which cannot run on the RK3588/RK3576 NPU. On a Rockchip NPU
+  host (`detect_rockchip_npu`), `get_models` now limits the catalog to
+  RKLLM-engine cards (`is_rkllm_model`) and `search_models` queries HF's
+  `rkllm` library (`filter=rkllm`) instead of `author=mlx-community`; both fall
+  back to all of HuggingFace when empty. Non-NPU hosts keep the mlx-community
+  default. Dashboard search placeholder and trending header made
+  library-agnostic.
+- **#25**: DaemonSet image pin bumped `rk-v0.1.0` → `rk-v0.2.0`.
+
 ## 2026-07-03: Tier-2 hardware validation (issues #5, #6 closed)
 
 First tokens from the RK3588 NPU: 4x Turing RK1 flashed to Armbian Trixie
