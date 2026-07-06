@@ -3,6 +3,31 @@
 Deltas of the `rk-integration` line against upstream `exo-explore/exo`, newest first.
 PR numbers reference [freed-dev-llc/exo-rkllama](https://github.com/freed-dev-llc/exo-rkllama).
 
+## 2026-07-06: rk-v0.2.2 (engine plugin registry)
+
+Point release: `ghcr.io/freed-dev-llc/exo-rkllama-rk:rk-v0.2.2` (arm64), same
+upstream base as rk-v0.2.1 (`exo-explore/exo` `54596e6d`). No behavior change:
+this is an internal refactor that shrinks the upstream-merge surface.
+
+- **#31**: engine dispatch and detection now route through a plugin registry
+  (`src/exo/shared/plugins.py`, `EnginePlugin` protocol) that the RKLLM port
+  registers with (`src/exo/worker/engines/rkllm/plugin.py`), instead of editing
+  shared upstream files with RKLLM-specific imports and predicates. Bootstrap
+  builder dispatch, `info_gatherer` backend detection, worker download
+  resolution, placement (pinning, single-node constraints, instance
+  construction, `INSTANCE_META_BACKENDS`), and the API catalog/search/preview
+  paths call generic registry hooks. `ModelCard.is_rkllm_model`,
+  `BoundInstance.is_rkllm_model`, and `FETCHED_CARD_BACKENDS` are replaced by
+  `plugin_for_card` / `plugin_for_instance` / `fetched_card_backends()`. The
+  only RKLLM-specific lines left in shared files are the wire-format types
+  (`Backend.RkllmNpu`, `InstanceMeta.RkllmSingleNode`, the `Instance` union
+  member) that every node must parse. Verified on the RK1 cluster on a branch
+  image before merge: catalog filtered to RKLLM-only, placement preview yields a
+  single `Pipeline`/`RkllmSingleNode` combination, `llama3.2-3b-rkllm` placed as
+  an `RkllmSingleNodeInstance` and streamed 118 chunks with the serving node's
+  NPU at 87% while the others stayed idle.
+- **#32**: DaemonSet image pin bumped `rk-v0.2.1` → `rk-v0.2.2`.
+
 ## 2026-07-04: rk-v0.2.1 (NPU onboarding and docs)
 
 Point release: `ghcr.io/freed-dev-llc/exo-rkllama-rk:rk-v0.2.1` (arm64), same
