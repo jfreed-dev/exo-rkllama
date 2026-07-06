@@ -65,10 +65,6 @@ class BoundInstance(FrozenModel):
             or ModelTask.ImageToImage in self.bound_shard.model_card.tasks
         )
 
-    @property
-    def is_rkllm_model(self) -> bool:
-        return isinstance(self.instance, RkllmSingleNodeInstance)
-
     @model_validator(mode="after")
     def validate_shard_exists(self) -> "BoundInstance":
         assert (

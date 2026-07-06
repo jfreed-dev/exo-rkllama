@@ -15,6 +15,7 @@ from exo.routing.event_router import (
 from exo.shared.apply import apply
 from exo.shared.constants import EXO_MAX_INSTANCE_RETRIES
 from exo.shared.models.model_cards import ModelId, card_cache
+from exo.shared.plugins import plugin_for_instance
 from exo.shared.types.chunks import InputImageChunk
 from exo.shared.types.commands import (
     DeleteInstance,
@@ -51,14 +52,13 @@ from exo.shared.types.tasks import (
 from exo.shared.types.text_generation import Base64Image, Base64ImageHash
 from exo.shared.types.topology import Connection, SocketConnection
 from exo.shared.types.worker.downloads import DownloadCompleted
-from exo.shared.types.worker.instances import InstanceId, RkllmSingleNodeInstance
+from exo.shared.types.worker.instances import InstanceId
 from exo.shared.types.worker.runners import RunnerId
 from exo.utils.channels import Receiver, Sender, channel
 from exo.utils.info_gatherer.info_gatherer import GatheredInfo, InfoGatherer
 from exo.utils.info_gatherer.net_profile import check_reachable
 from exo.utils.keyed_backoff import KeyedBackoff
 from exo.utils.task_group import TaskGroup
-from exo.worker.engines.rkllm.models import resolve_rkllm_download
 from exo.worker.plan import plan
 from exo.worker.runner.supervisor import RunnerSupervisor
 
@@ -237,17 +237,17 @@ class Worker:
                             task_id=task.task_id, task_status=TaskStatus.Complete
                         )
                     )
-                case DownloadModel(shard_metadata=shard) if isinstance(
-                    self.state.instances.get(task.instance_id),
-                    RkllmSingleNodeInstance,
-                ):
+                case DownloadModel(shard_metadata=shard) if (
+                    engine_plugin := plugin_for_instance(
+                        self.state.instances.get(task.instance_id)
+                    )
+                ) is not None:
                     # Same predicate as engine dispatch (bootstrap): the placed
-                    # instance type decides. Pre-converted .rkllm artifacts cannot
-                    # be downloaded from HF; resolve a local copy (or defer to the
-                    # rkllama server) instead.
+                    # instance type decides. Plugin-managed artifacts cannot be
+                    # downloaded from HF; the engine resolves them itself.
                     self._download_backoff.record_attempt(shard.model_card.model_id)
                     progress = await to_thread.run_sync(
-                        resolve_rkllm_download, self.node_id, shard
+                        engine_plugin.resolve_download, self.node_id, shard
                     )
                     await self.event_sender.send(
                         NodeDownloadProgress(download_progress=progress)

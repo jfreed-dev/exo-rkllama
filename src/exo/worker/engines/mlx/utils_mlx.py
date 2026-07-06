@@ -50,7 +50,6 @@ from exo.shared.types.worker.instances import (
     BoundInstance,
     MlxJacclInstance,
     MlxRingInstance,
-    RkllmSingleNodeInstance,
 )
 from exo.shared.types.worker.runner_response import ModelLoadingResponse
 from exo.shared.types.worker.shards import (
@@ -143,11 +142,11 @@ def mlx_distributed_init(
                 os.environ["MLX_JACCL_COORDINATOR"] = jaccl_coordinator
                 group = mx.distributed.init(backend="jaccl", strict=True)
 
-            case RkllmSingleNodeInstance():
-                # RKLLM runs whole-model on a single NPU node and never sets up
-                # an MLX distributed group; this path is unreachable for it.
+            case _:
+                # Plugin-engine instances run whole-model on a single node and
+                # never set up an MLX distributed group; unreachable for them.
                 raise AssertionError(
-                    "initialize_mlx called for an RkllmSingleNodeInstance"
+                    f"initialize_mlx called for {type(bound_instance.instance).__name__}"
                 )
 
         logger.info(f"Rank {rank} mlx distributed initialization complete")

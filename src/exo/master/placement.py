@@ -12,6 +12,11 @@ from exo.master.placement_utils import (
     get_smallest_cycles,
 )
 from exo.shared.models.model_cards import ModelId
+from exo.shared.plugins import (
+    load_plugins,
+    plugin_for_card,
+    plugin_for_instance_meta,
+)
 from exo.shared.topology import Topology
 from exo.shared.types.backends import Backend
 from exo.shared.types.commands import (
@@ -44,7 +49,6 @@ from exo.shared.types.worker.instances import (
     InstanceMeta,
     MlxJacclInstance,
     MlxRingInstance,
-    RkllmSingleNodeInstance,
 )
 from exo.shared.types.worker.shards import Sharding
 from exo.utils.ports import random_ephemeral_port
@@ -52,7 +56,10 @@ from exo.utils.ports import random_ephemeral_port
 INSTANCE_META_BACKENDS: dict[InstanceMeta, list[Backend]] = {
     InstanceMeta.MlxRing: [Backend.MlxMetal, Backend.MlxCuda, Backend.MlxCpu],
     InstanceMeta.MlxJaccl: [Backend.MlxMetal],
-    InstanceMeta.RkllmSingleNode: [Backend.RkllmNpu],
+} | {
+    # Engine plugins contribute their own single-backend instance metas.
+    plugin.instance_meta: [plugin.backend]
+    for plugin in load_plugins()
 }
 
 
@@ -116,14 +123,15 @@ def place_instance(
     download_status: Mapping[NodeId, Sequence[DownloadProgress]] | None = None,
     node_rdma_ctl: Mapping[NodeId, NodeRdmaCtlStatus] | None = None,
 ) -> dict[InstanceId, Instance]:
-    # RKLLM runs a whole model on a single NPU (no sharding across nodes), so force
-    # a single-node pipeline placement regardless of what was requested. Only cards
-    # whose sole backend is RkllmNpu are pinned; cards that could also run on MLX
-    # keep their requested placement.
-    if command.model_card.is_rkllm_model:
+    # Plugin engines run a whole model on a single node (no sharding across
+    # nodes), so force a single-node pipeline placement regardless of what was
+    # requested. Only cards owned exclusively by a plugin backend are pinned;
+    # cards that could also run elsewhere keep their requested placement.
+    card_plugin = plugin_for_card(command.model_card)
+    if card_plugin is not None:
         command = command.model_copy(
             update={
-                "instance_meta": InstanceMeta.RkllmSingleNode,
+                "instance_meta": card_plugin.instance_meta,
                 "sharding": Sharding.Pipeline,
                 "min_nodes": 1,
             }
@@ -187,14 +195,14 @@ def place_instance(
                 "Pipeline parallelism is not supported for Gemma 4; use tensor parallelism instead."
             )
 
-    if command.instance_meta == InstanceMeta.RkllmSingleNode:
+    if plugin_for_instance_meta(command.instance_meta) is not None:
         cycles_with_sufficient_memory = [
             cycle for cycle in cycles_with_sufficient_memory if len(cycle) == 1
         ]
         if not cycles_with_sufficient_memory:
             raise ValueError(
-                "RKLLM runs a whole model on one NPU node; no single-node cycle has "
-                f"enough memory for {command.model_card.model_id}"
+                f"{command.instance_meta.value} runs a whole model on one node; no "
+                f"single-node cycle has enough memory for {command.model_card.model_id}"
             )
         # Anti-affinity for the data-parallel pool: replicas of the same model
         # spread across nodes. Without this, the download-score tiebreak stacks
@@ -285,10 +293,10 @@ def place_instance(
     )
 
     # Single-node: force Pipeline/Ring (Tensor and Jaccl require multi-node).
-    # RKLLM is already pinned to its own single-node meta above; leave it alone.
+    # Plugin metas are already pinned to single-node above; leave them alone.
     if (
         len(selected_cycle) == 1
-        and command.instance_meta != InstanceMeta.RkllmSingleNode
+        and plugin_for_instance_meta(command.instance_meta) is None
     ):
         command = command.model_copy(
             update={
@@ -305,6 +313,13 @@ def place_instance(
 
     instance_id = InstanceId()
     target_instances = dict(deepcopy(current_instances))
+
+    instance_plugin = plugin_for_instance_meta(command.instance_meta)
+    if instance_plugin is not None:
+        target_instances[instance_id] = instance_plugin.make_instance(
+            instance_id, shard_assignments
+        )
+        return target_instances
 
     match command.instance_meta:
         case InstanceMeta.MlxJaccl:
@@ -353,11 +368,10 @@ def place_instance(
                 hosts_by_node=hosts_by_node,
                 ephemeral_port=ephemeral_port,
             )
-        case InstanceMeta.RkllmSingleNode:
-            # Single-node pipeline assignment: one shard, world_size 1, rank 0.
-            target_instances[instance_id] = RkllmSingleNodeInstance(
-                instance_id=instance_id,
-                shard_assignments=shard_assignments,
+        case _:
+            raise AssertionError(
+                f"no instance factory for {command.instance_meta}; "
+                "plugin-provided metas are constructed above"
             )
 
     return target_instances

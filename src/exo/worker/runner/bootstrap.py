@@ -6,6 +6,7 @@ from typing import Self, cast
 
 import loguru
 
+from exo.shared.plugins import plugin_for_instance
 from exo.shared.types.events import Event
 from exo.shared.types.tasks import Task, TaskId
 from exo.shared.types.worker.instances import BoundInstance
@@ -65,10 +66,9 @@ def entrypoint(
         from exo.worker.runner.runner import Runner
 
         builder: Builder
-        if bound_instance.is_rkllm_model:
-            from exo.worker.engines.rkllm.builder import RkllmBuilder
-
-            builder = RkllmBuilder(event_sender_downcast, cancel_receiver)
+        engine_plugin = plugin_for_instance(bound_instance.instance)
+        if engine_plugin is not None:
+            builder = engine_plugin.make_builder(event_sender_downcast, cancel_receiver)
         elif bound_instance.is_image_model:
             from exo.worker.engines.image.builder import MfluxBuilder
 

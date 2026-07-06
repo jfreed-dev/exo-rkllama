@@ -5,9 +5,13 @@ from pathlib import Path
 import pytest
 
 from exo.shared.models.model_cards import (
-    FETCHED_CARD_BACKENDS,
     ModelCard,
     ModelTask,
+)
+from exo.shared.plugins import (
+    fetched_card_backends,
+    plugin_for_card,
+    plugin_for_instance,
 )
 from exo.shared.types.backends import Backend
 from exo.shared.types.common import ModelId, NodeId
@@ -146,19 +150,21 @@ def test_resolve_download_fails_for_ctypes_without_artifact(
     assert "RKLLM_MODEL_PATH" in progress.error_message
 
 
-def test_card_is_rkllm_model_only_for_rkllm_only_backends() -> None:
-    assert _card([Backend.RkllmNpu]).is_rkllm_model
-    assert not _card([Backend.MlxMetal]).is_rkllm_model
+def test_card_owned_by_plugin_only_for_rkllm_only_backends() -> None:
+    rkllm_plugin = plugin_for_card(_card([Backend.RkllmNpu]))
+    assert rkllm_plugin is not None
+    assert rkllm_plugin.backend == Backend.RkllmNpu
+    assert plugin_for_card(_card([Backend.MlxMetal])) is None
     # A permissive card listing every backend (e.g. an old fetched card) is not
     # treated as an RKLLM model.
-    assert not _card(list(Backend)).is_rkllm_model
+    assert plugin_for_card(_card(list(Backend))) is None
 
 
 def test_fetched_card_backends_exclude_rkllm() -> None:
     # The default used by ModelCard.fetch_from_hf: an arbitrary HF safetensors
     # repo can never run on the RKLLM engine.
-    assert Backend.RkllmNpu not in FETCHED_CARD_BACKENDS
-    assert not _card(FETCHED_CARD_BACKENDS).is_rkllm_model
+    assert Backend.RkllmNpu not in fetched_card_backends()
+    assert plugin_for_card(_card(fetched_card_backends())) is None
 
 
 @pytest.mark.usefixtures("isolated_dirs")
@@ -210,7 +216,7 @@ def test_bound_instance_dispatch_follows_instance_type() -> None:
         bound_runner_id=runner_id,
         bound_node_id=node_id,
     )
-    assert not mlx_bound.is_rkllm_model
+    assert plugin_for_instance(mlx_bound.instance) is None
 
     rkllm_bound = BoundInstance(
         instance=RkllmSingleNodeInstance(
@@ -220,4 +226,6 @@ def test_bound_instance_dispatch_follows_instance_type() -> None:
         bound_runner_id=runner_id,
         bound_node_id=node_id,
     )
-    assert rkllm_bound.is_rkllm_model
+    rkllm_plugin = plugin_for_instance(rkllm_bound.instance)
+    assert rkllm_plugin is not None
+    assert rkllm_plugin.backend == Backend.RkllmNpu
