@@ -3,6 +3,24 @@
 Deltas of the `rk-integration` line against upstream `exo-explore/exo`, newest first.
 PR numbers reference [freed-dev-llc/exo-rkllama](https://github.com/freed-dev-llc/exo-rkllama).
 
+## 2026-07-06: rk-v0.2.3 (hub-add error guidance)
+
+Point release: `ghcr.io/freed-dev-llc/exo-rkllama-rk:rk-v0.2.3` (arm64), same
+upstream base as rk-v0.2.2 (`exo-explore/exo` `54596e6d`).
+
+- **#33**: adding a model from the hub on an NPU host failed with an opaque
+  `Failed to add model (400: Bad Request)`. The NPU-host search is gated to
+  HF's `rkllm` library (#24), but `POST /models/add` builds cards from
+  `config.json` + safetensors, which `.rkllm` repos don't have, and the
+  dashboard read `err.detail` while the API wraps errors as
+  `{error: {message}}`, so no detail ever reached the user. `EnginePlugin`
+  grows `hub_add_guidance`, `plugin_for_hf_model()` matches a hub repo's
+  library/tags against each plugin's `hf_search_filter`, `add_custom_model`
+  returns the plugin's installation guidance for plugin-library repos, and the
+  dashboard reads the error envelope. Downloading `.rkllm` models from the hub
+  end to end is #34.
+- **#35**: DaemonSet image pin bumped `rk-v0.2.2` → `rk-v0.2.3`.
+
 ## 2026-07-06: rk-v0.2.2 (engine plugin registry)
 
 Point release: `ghcr.io/freed-dev-llc/exo-rkllama-rk:rk-v0.2.2` (arm64), same
