@@ -1390,7 +1390,9 @@
       let message = `Failed to add model (${response.status}: ${response.statusText})`;
       try {
         const err = await response.json();
-        if (err.detail) message = err.detail;
+        // The API wraps HTTPException detail as {error: {message}}.
+        if (err.error?.message) message = err.error.message;
+        else if (err.detail) message = err.detail;
       } catch {
         // use default message
       }

@@ -44,6 +44,14 @@ class RkllmEnginePlugin:
     def hf_search_filter(self) -> str:
         return "rkllm"
 
+    @property
+    def hub_add_guidance(self) -> str:
+        return (
+            "RKLLM models are pre-converted NPU artifacts that exo does not "
+            "download. Copy the .rkllm file into a model directory on the NPU "
+            "node(s) and add a model card for it; see docs/rk-hardware/MODELS.md."
+        )
+
     def detect(self) -> bool:
         return detect_rockchip_npu()
 

@@ -94,6 +94,20 @@ def test_owns_instance_matches_only_rkllm_instances() -> None:
     assert plugins.plugin_for_instance(None) is None
 
 
+def test_plugin_for_hf_model_matches_library_and_tags() -> None:
+    # Hub repos in the rkllm library (or tagged rkllm) belong to the RK plugin;
+    # ordinary safetensors repos do not.
+    assert plugins.plugin_for_hf_model("rkllm", []) is RKLLM_PLUGIN
+    assert plugins.plugin_for_hf_model(None, ["rkllm", "qwen"]) is RKLLM_PLUGIN
+    assert plugins.plugin_for_hf_model("transformers", ["safetensors"]) is None
+    assert plugins.plugin_for_hf_model(None, []) is None
+
+
+def test_hub_add_guidance_names_the_artifact_workflow() -> None:
+    assert ".rkllm" in RKLLM_PLUGIN.hub_add_guidance
+    assert "docs/rk-hardware/MODELS.md" in RKLLM_PLUGIN.hub_add_guidance
+
+
 def test_detect_plugin_backends_follows_hardware_detection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
