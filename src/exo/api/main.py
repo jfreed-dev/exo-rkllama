@@ -6,7 +6,6 @@ import random
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
 from datetime import datetime, timezone
-from functools import cache
 from http import HTTPStatus
 from pathlib import Path
 from typing import Annotated, Any, Literal, cast
@@ -144,6 +143,7 @@ from exo.shared.models.model_cards import (
     ModelId,
     ModelTask,
 )
+from exo.shared.plugins import detected_host_plugin, plugin_for_card
 from exo.shared.tracing import TraceEvent, compute_stats, export_trace, load_trace_file
 from exo.shared.types.chunks import (
     ErrorChunk,
@@ -207,17 +207,9 @@ from exo.utils.channels import Receiver, Sender, channel
 from exo.utils.disk_event_log import DiskEventLog
 from exo.utils.power_sampler import PowerSampler
 from exo.utils.task_group import TaskGroup
-from exo.worker.engines.rkllm.detection import detect_rockchip_npu
 
 _API_EVENT_LOG_DIR = EXO_EVENT_LOG_DIR / "api"
 ONBOARDING_COMPLETE_FILE = EXO_CACHE_HOME / "onboarding_complete"
-
-
-@cache
-def host_runs_on_rockchip_npu() -> bool:
-    """Whether this API node is a Rockchip RK3588/RK3576 NPU host, which can only run
-    RKLLM-engine models. Cached because the host hardware does not change at runtime."""
-    return detect_rockchip_npu()
 
 
 def _format_to_content_type(image_format: Literal["png", "jpeg", "webp"] | None) -> str:
@@ -534,10 +526,12 @@ class API:
                 status_code=400, detail=f"Failed to load model card: {exc}"
             ) from exc
         instance_combinations: list[tuple[Sharding, InstanceMeta, int]] = []
-        if model_card.is_rkllm_model:
-            # RKLLM is whole-model on one NPU; only a single-node pipeline applies.
+        card_plugin = plugin_for_card(model_card)
+        if card_plugin is not None:
+            # Plugin engines are whole-model on one node; only a single-node
+            # pipeline applies.
             instance_combinations.append(
-                (Sharding.Pipeline, InstanceMeta.RkllmSingleNode, 1)
+                (Sharding.Pipeline, card_plugin.instance_meta, 1)
             )
         else:
             for sharding in (Sharding.Pipeline, Sharding.Tensor):
@@ -1801,14 +1795,15 @@ class API:
     async def get_models(self, status: str | None = Query(default=None)) -> ModelList:
         """Returns list of available models, optionally filtered by being downloaded.
 
-        On a Rockchip NPU host the catalog is limited to RKLLM-engine models, since the
-        NPU cannot run MLX or other-backend cards. Non-RKLLM models remain reachable via
-        ``search_models``.
+        On a host detected as engine-plugin hardware (e.g. an NPU-only host) the
+        catalog is limited to that engine's cards, since the host cannot run
+        other-backend cards. Other models remain reachable via ``search_models``.
         """
         cards = await model_cards.card_cache.list_all()
 
-        if host_runs_on_rockchip_npu():
-            cards = [card for card in cards if card.is_rkllm_model]
+        host_plugin = detected_host_plugin()
+        if host_plugin is not None:
+            cards = [card for card in cards if plugin_for_card(card) is host_plugin]
 
         if status == "downloaded":
             downloaded_model_ids: set[str] = set()
@@ -1893,10 +1888,10 @@ class API:
     async def search_models(
         self, query: str = "", limit: int = 20
     ) -> list[HuggingFaceSearchResult]:
-        """Search HuggingFace Hub. On a Rockchip NPU host, prefer models in the ``rkllm``
-        library (the only ones the RK3588/RK3576 NPU can run); elsewhere prefer
-        mlx-community. Both fall back to searching all of HuggingFace when the preferred
-        set is empty.
+        """Search HuggingFace Hub. On a host detected as engine-plugin hardware,
+        prefer models matching the plugin's HF library filter (the only ones that
+        host can run); elsewhere prefer mlx-community. Both fall back to searching
+        all of HuggingFace when the preferred set is empty.
         """
         from huggingface_hub import ModelInfo, list_models
 
@@ -1913,11 +1908,12 @@ class API:
                 for m in models
             ]
 
-        if host_runs_on_rockchip_npu():
+        host_plugin = detected_host_plugin()
+        if host_plugin is not None:
             preferred = _to_results(
                 list_models(
                     search=query or None,
-                    filter="rkllm",
+                    filter=host_plugin.hf_search_filter,
                     sort="downloads",
                     limit=limit,
                 )

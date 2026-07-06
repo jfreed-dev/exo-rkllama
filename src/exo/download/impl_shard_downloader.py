@@ -17,6 +17,7 @@ from exo.shared.models.model_cards import (
     ModelId,
     ModelTask,
 )
+from exo.shared.plugins import plugin_for_card
 from exo.shared.types.memory import Memory
 from exo.shared.types.worker.shards import (
     PipelineShardMetadata,
@@ -260,10 +261,11 @@ class ResumableShardDownloader(ShardDownloader):
         tasks = [
             create_task(download_with_semaphore(model_card))
             for model_card in await model_cards.card_cache.list_all()
-            # RKLLM cards are pre-converted local artifacts, not HF repos: the worker
-            # resolves them itself, and a synthetic status emitted here would
-            # overwrite the worker's DownloadCompleted in indexed state every sweep.
-            if not model_card.is_rkllm_model
+            # Plugin-owned cards are pre-converted local artifacts, not HF repos:
+            # the worker resolves them itself, and a synthetic status emitted here
+            # would overwrite the worker's DownloadCompleted in indexed state
+            # every sweep.
+            if plugin_for_card(model_card) is None
         ]
 
         for task in asyncio.as_completed(tasks):

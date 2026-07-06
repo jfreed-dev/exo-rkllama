@@ -22,6 +22,7 @@ from exo.routing.event_router import (
 from exo.shared.constants import EXO_DEFAULT_MODELS_DIR, EXO_MODELS_READ_ONLY_DIRS
 from exo.shared.models import model_cards
 from exo.shared.models.model_cards import ModelId
+from exo.shared.plugins import plugin_for_card
 from exo.shared.types.commands import (
     CancelDownload,
     DeleteDownload,
@@ -317,12 +318,12 @@ class DownloadCoordinator:
         self.active_downloads[model_id] = scope
 
     async def _delete_download(self, model_id: ModelId) -> None:
-        # RKLLM artifacts are hand-placed, never downloaded by exo. The worker's
-        # read-only completion event never reaches this coordinator's local
-        # tracking, so guard by card instead of download_status.
+        # Plugin-engine artifacts are hand-placed, never downloaded by exo. The
+        # worker's read-only completion event never reaches this coordinator's
+        # local tracking, so guard by card instead of download_status.
         card = model_cards.card_cache.get(model_id)
-        if card is not None and card.is_rkllm_model:
-            logger.warning(f"Refusing to delete hand-placed RKLLM model {model_id}")
+        if card is not None and plugin_for_card(card) is not None:
+            logger.warning(f"Refusing to delete hand-placed model {model_id}")
             return
 
         # Protect read-only models from deletion

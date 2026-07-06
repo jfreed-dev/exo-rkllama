@@ -154,14 +154,6 @@ class SamplingDefaults(SamplingValues):
     non_thinking: SamplingValues | None = None
 
 
-# Backends assigned to cards fetched from HF: everything except RkllmNpu, which
-# needs a pre-converted .rkllm artifact and an explicit card, never a raw
-# safetensors repo.
-FETCHED_CARD_BACKENDS: list[Backend] = [
-    backend for backend in Backend if backend is not Backend.RkllmNpu
-]
-
-
 class ModelCard(FrozenModel):
     model_id: ModelId
     storage_size: Memory
@@ -183,15 +175,6 @@ class ModelCard(FrozenModel):
     is_custom: bool = False
     vision: VisionCardConfig | None = None
     sampling_defaults: SamplingDefaults = Field(default_factory=SamplingDefaults)
-
-    @property
-    def is_rkllm_model(self) -> bool:
-        """True when this card can only run on the Rockchip NPU (RKLLM engine).
-
-        RKLLM cards are hand-written with ``backends = ["RkllmNpu"]``. A card that
-        merely includes RkllmNpu among other backends is not an RKLLM model.
-        """
-        return set(self.backends) == {Backend.RkllmNpu}
 
     @model_validator(mode="after")
     def _autodetect_vision(self) -> "ModelCard":
@@ -256,6 +239,10 @@ class ModelCard(FrozenModel):
         This is a pure fetch — it does NOT save to disk or update the cache.
         Persistence is handled by the event-sourcing layer (worker event handler).
         """
+        # Function-level import: exo.shared.plugins is deliberately kept out of
+        # this module's import graph (plugins type-checks against ModelCard).
+        from exo.shared.plugins import fetched_card_backends
+
         # TODO: failure if files do not exist
         config_data = await fetch_config_data(model_id)
         num_layers = config_data.layer_count
@@ -274,8 +261,8 @@ class ModelCard(FrozenModel):
             is_custom=True,
             vision=config_data.vision,
             # We don't know what an arbitrary HF model supports, so let the
-            # placement gate decide among these.
-            backends=FETCHED_CARD_BACKENDS,
+            # placement gate decide among the fetchable backends.
+            backends=fetched_card_backends(),
         )
 
 
