@@ -12,7 +12,7 @@ from typing import Annotated, Any, Literal, cast
 from uuid import uuid4
 
 import anyio
-from anyio import BrokenResourceError, ClosedResourceError
+from anyio import BrokenResourceError, ClosedResourceError, to_thread
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -143,7 +143,11 @@ from exo.shared.models.model_cards import (
     ModelId,
     ModelTask,
 )
-from exo.shared.plugins import detected_host_plugin, plugin_for_card
+from exo.shared.plugins import (
+    detected_host_plugin,
+    plugin_for_card,
+    plugin_for_hf_model,
+)
 from exo.shared.tracing import TraceEvent, compute_stats, export_trace, load_trace_file
 from exo.shared.types.chunks import (
     ErrorChunk,
@@ -214,6 +218,28 @@ ONBOARDING_COMPLETE_FILE = EXO_CACHE_HOME / "onboarding_complete"
 
 def _format_to_content_type(image_format: Literal["png", "jpeg", "webp"] | None) -> str:
     return f"image/{image_format or 'png'}"
+
+
+async def _hub_add_failure_detail(model_id: str, exc: Exception) -> str:
+    """Explain a failed hub add.
+
+    Repos in an engine plugin's HF library (e.g. pre-converted NPU artifacts)
+    have no config.json or safetensors to build a card from, so the raw fetch
+    error is misleading; return the plugin's installation guidance instead.
+    """
+    try:
+        from huggingface_hub import model_info
+
+        info = await to_thread.run_sync(model_info, model_id)
+        plugin = plugin_for_hf_model(info.library_name, info.tags or [])
+    except Exception:
+        plugin = None
+    if plugin is not None:
+        return (
+            f"{model_id} is a {plugin.hf_search_filter}-library model. "
+            f"{plugin.hub_add_guidance}"
+        )
+    return f"Failed to fetch model: {exc}"
 
 
 def _ensure_seed(params: AdvancedImageParams | None) -> AdvancedImageParams:
@@ -1842,7 +1868,8 @@ class API:
             card = await ModelCard.fetch_from_hf(payload.model_id)
         except Exception as exc:
             raise HTTPException(
-                status_code=400, detail=f"Failed to fetch model: {exc}"
+                status_code=400,
+                detail=await _hub_add_failure_detail(payload.model_id, exc),
             ) from exc
 
         await self.command_sender.send(

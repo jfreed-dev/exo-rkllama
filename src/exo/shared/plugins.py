@@ -18,6 +18,7 @@ when ``load_plugins`` first runs, never when this module is imported.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from functools import cache
 from typing import TYPE_CHECKING, Protocol
 
@@ -51,6 +52,16 @@ class EnginePlugin(Protocol):
     @property
     def hf_search_filter(self) -> str:
         """HuggingFace ``list_models`` library filter for models this engine can run."""
+        ...
+
+    @property
+    def hub_add_guidance(self) -> str:
+        """How to install one of this engine's models, shown when a hub add fails.
+
+        Repos in the engine's HF library hold pre-converted artifacts, not
+        safetensors, so ``ModelCard.fetch_from_hf`` cannot build a card from
+        them; the API returns this text instead of the raw fetch error.
+        """
         ...
 
     def detect(self) -> bool:
@@ -138,6 +149,24 @@ def plugin_for_instance(instance: Instance | None) -> EnginePlugin | None:
         return None
     for plugin in load_plugins():
         if plugin.owns_instance(instance):
+            return plugin
+    return None
+
+
+def plugin_for_hf_model(
+    library_name: str | None, tags: Iterable[str]
+) -> EnginePlugin | None:
+    """The plugin whose HuggingFace library a hub repo belongs to, if any.
+
+    Matches the repo's ``library_name`` or tags against each plugin's
+    ``hf_search_filter`` (the same filter the NPU-host model search uses).
+    """
+    tag_set = set(tags)
+    for plugin in load_plugins():
+        if (
+            library_name == plugin.hf_search_filter
+            or plugin.hf_search_filter in tag_set
+        ):
             return plugin
     return None
 
