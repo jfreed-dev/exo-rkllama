@@ -62,6 +62,10 @@ class Election:
         # For reference: This node can be elected master if all nodes are not master candidates
         # Any master candidate will automatically win out over this node.
         self.seniority = seniority if is_candidate else -1
+        # Seniority accumulated while master is forfeited on demotion; we fall
+        # back to this baseline (0 normally, 1M for --force-master) so a stale
+        # ex-master cannot out-rank the incumbent in a later round.
+        self._base_seniority = self.seniority
         self.clock = 0
         self.node_id = node_id
         self.commands_seen = 0
@@ -111,6 +115,16 @@ class Election:
     async def elect(self, em: ElectionMessage) -> None:
         logger.debug(f"Electing: {em}")
         is_new_master = em.proposed_session != self.current_session
+        lost_mastery = (
+            self.current_session.master_node_id == self.node_id
+            and em.proposed_session.master_node_id != self.node_id
+        )
+        if lost_mastery and self.seniority > self._base_seniority:
+            logger.info(
+                f"Demoted from master, resetting seniority "
+                f"{self.seniority} -> {self._base_seniority}"
+            )
+            self.seniority = self._base_seniority
         self.current_session = em.proposed_session
         logger.debug(f"Current session: {self.current_session}")
         await self._er_sender.send(
