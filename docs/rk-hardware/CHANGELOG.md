@@ -3,6 +3,32 @@
 Deltas of the `rk-integration` line against upstream `exo-explore/exo`, newest first.
 PR numbers reference [freed-dev-llc/exo-rkllama](https://github.com/freed-dev-llc/exo-rkllama).
 
+## 2026-08-08: rk-v0.3.0 (R1-14B verified on hardware)
+
+Minor release on the rk-v0.2.4 content (`exo-explore/exo` `54596e6d`), cut
+after running the full branch-image → on-cluster smoke → pin flow. Image
+`ghcr.io/freed-dev-llc/exo-rkllama-rk:rk-v0.3.0` (arm64). Code delta against
+rk-v0.2.4 is only the smoke-script bound (#43); the minor bump marks the first
+configuration verified end-to-end on the RK1 cluster with the synced cards
+dir, and the sampling behavior change from #36 warrants more than a patch.
+
+- **On-cluster verification** (branch image `rk-v0.3.0-rc1`, 4x RK1):
+  `/v1/models` serves the synced card with `reasoning_dialect =
+  "post_last_user"`; a `max_tokens=20` chat returns in 27 s with
+  `finish_reason="length"` (the #36 cap working on hardware); `smoke.sh
+  deepseek-r1-distill-qwen-14b-rkllm` passes with the bounded chat (129
+  chunks). Behavior change observed: with the card's sampling now applied at
+  init, the same prompt reasons >600 s where library defaults stopped at
+  ~306 s — an unbounded R1 chat can run toward the 2048-token runtime cap
+  (~45 min at ~0.8 tok/s), so always set `max_tokens`.
+- **#43**: `smoke.sh` bounds its chat via `CHAT_MAX_TOKENS` (default 128) so
+  reasoning models finish inside `CHAT_MAX_TIME_S`; MODELS.md notes that
+  pre-rk-v0.3.0 images ignore `max_tokens` entirely.
+- **#44**: DaemonSet image pin bumped `rk-v0.2.4` → `rk-v0.3.0`; the
+  host-mounted cards dir on all four nodes was synced with the repo's
+  `deepseek-r1-distill-qwen-14b-rkllm` card (picks up
+  `reasoning_dialect = "post_last_user"`).
+
 ## 2026-08-07: rk-v0.2.4 (stall re-election + R1-14B card)
 
 Point release: `ghcr.io/freed-dev-llc/exo-rkllama-rk:rk-v0.2.4` (arm64), same

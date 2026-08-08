@@ -34,7 +34,7 @@ spec:
         - name: exo
           # Pin to a release tag (immutable), not latest: with IfNotPresent a
           # cached latest never repulls. Roll forward via kubectl set image.
-          image: ghcr.io/freed-dev-llc/exo-rkllama-rk:rk-v0.2.4
+          image: ghcr.io/freed-dev-llc/exo-rkllama-rk:rk-v0.3.0
           imagePullPolicy: IfNotPresent
           securityContext:
             privileged: true
