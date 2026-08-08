@@ -152,7 +152,7 @@ async def test_peer_with_higher_seniority_wins_and_we_switch_master() -> None:
             cm_tx.close()
             co_tx.close()
 
-    # We lost → seniority unchanged
+    # We lost → seniority back at its baseline (which was already 0)
     assert election.seniority == 0
 
 
@@ -343,6 +343,73 @@ async def test_connection_message_triggers_new_round_broadcast() -> None:
             co_tx.close()
 
     # After cancellation (before election finishes), no seniority changes asserted here.
+
+
+@pytest.mark.anyio
+async def test_demoted_master_forfeits_seniority_and_cannot_retake_mastery() -> None:
+    """
+    Regression for #41: seniority accumulated while master must reset when a
+    peer takes the session, so a later re-election (e.g. the #40 stall nudge)
+    against a lower-seniority incumbent does not flip mastery back to us.
+    """
+    em_out_tx, _em_out_rx = channel[ElectionMessage]()
+    em_in_tx, em_in_rx = channel[ElectionMessage]()
+    er_tx, er_rx = channel[ElectionResult]()
+    cm_tx, cm_rx = channel[ConnectionMessage]()
+    co_tx, co_rx = channel[ForwarderCommand]()
+
+    me = NodeId("ME")
+
+    election = Election(
+        node_id=me,
+        election_message_receiver=em_in_rx,
+        election_message_sender=em_out_tx,
+        election_result_sender=er_tx,
+        connection_message_receiver=cm_rx,
+        command_receiver=co_rx,
+        is_candidate=True,
+    )
+
+    async with create_task_group() as tg:
+        with fail_after(5):
+            tg.start_soon(election.run)
+
+            # Round 1: win as master against two peers → seniority ratchets to 3
+            await em_in_tx.send(em(clock=1, seniority=0, node_id="A"))
+            await em_in_tx.send(em(clock=1, seniority=0, node_id="B"))
+            while True:
+                result = await er_rx.receive()
+                if result.won_clock == 1:
+                    break
+            assert result.session_id.master_node_id == me
+            assert election.seniority == 3
+
+            # Round 2: PEER out-ranks us and takes the session → we are demoted
+            await em_in_tx.send(em(clock=2, seniority=10, node_id="PEER"))
+            while True:
+                result = await er_rx.receive()
+                if result.won_clock == 2:
+                    break
+            assert result.session_id.master_node_id == NodeId("PEER")
+            assert result.is_new_master is True
+            assert election.seniority == 0
+
+            # Round 3: a re-election where the incumbent's real seniority (2) is
+            # lower than our pre-demotion 3. Without the reset we would win here
+            # and drag the cluster back to our stale state.
+            await em_in_tx.send(
+                em(clock=3, seniority=2, node_id="PEER", election_clock=2)
+            )
+            while True:
+                result = await er_rx.receive()
+                if result.won_clock == 3:
+                    break
+            assert result.session_id.master_node_id == NodeId("PEER")
+            assert result.is_new_master is False
+
+            em_in_tx.close()
+            cm_tx.close()
+            co_tx.close()
 
 
 @pytest.mark.anyio
