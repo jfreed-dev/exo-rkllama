@@ -24,7 +24,7 @@ dir, and the sampling behavior change from #36 warrants more than a patch.
 - **#43**: `smoke.sh` bounds its chat via `CHAT_MAX_TOKENS` (default 128) so
   reasoning models finish inside `CHAT_MAX_TIME_S`; MODELS.md notes that
   pre-rk-v0.3.0 images ignore `max_tokens` entirely.
-- **#NN**: DaemonSet image pin bumped `rk-v0.2.4` → `rk-v0.3.0`; the
+- **#44**: DaemonSet image pin bumped `rk-v0.2.4` → `rk-v0.3.0`; the
   host-mounted cards dir on all four nodes was synced with the repo's
   `deepseek-r1-distill-qwen-14b-rkllm` card (picks up
   `reasoning_dialect = "post_last_user"`).
