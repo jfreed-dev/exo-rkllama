@@ -3,7 +3,10 @@
 Deltas of the `rk-integration` line against upstream `exo-explore/exo`, newest first.
 PR numbers reference [freed-dev-llc/exo-rkllama](https://github.com/freed-dev-llc/exo-rkllama).
 
-## Unreleased
+## 2026-08-07: rk-v0.2.4 (stall re-election + R1-14B card)
+
+Point release: `ghcr.io/freed-dev-llc/exo-rkllama-rk:rk-v0.2.4` (arm64), same
+upstream base as rk-v0.2.3 (`exo-explore/exo` `54596e6d`).
 
 - **#40** (fixes #37): stalled event-log sync now triggers a master
   re-election instead of retrying forever. Pods restarted at different times
@@ -44,6 +47,7 @@ PR numbers reference [freed-dev-llc/exo-rkllama](https://github.com/freed-dev-ll
   `reasoning_dialect = "post_last_user"`. MODELS.md also fixes the
   quantization/artifact-filename mismatch and the smoke-script path, and
   scopes the `<think>`-preamble guidance to what each backend actually does.
+- **#42**: DaemonSet image pin bumped `rk-v0.2.3` → `rk-v0.2.4`.
 
 ## 2026-07-06: rk-v0.2.3 (hub-add error guidance)
 
