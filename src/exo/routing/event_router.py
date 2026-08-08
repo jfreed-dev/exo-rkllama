@@ -51,6 +51,12 @@ class EventRouter:
     resync_sender: Sender[ConnectionMessage] | None = None
     resync_nack_threshold: int = 8
     resync_foreign_threshold: int = 100
+    # Uplink counterpart of the two downlink detectors above: a local event
+    # retransmitted this many times without ever coming back indexed means the
+    # master is not hearing us (exo-rkllama#38), even though our downlink may
+    # still be applying its events. At one retransmit per _retry_age_seconds
+    # this is roughly a minute of a one-way stall.
+    resync_unacked_threshold: int = 12
     _system_id: SystemId = field(init=False, default_factory=SystemId)
     internal_outbound: list[Sender[IndexedEvent]] = field(
         init=False, default_factory=list
@@ -70,6 +76,10 @@ class EventRouter:
 
     _foreign_event_streak: int = field(init=False, default=0)
 
+    _retry_interval_seconds: float = field(init=False, default=1.0)
+    _retry_age_seconds: float = field(init=False, default=5.0)
+    _unacked_retries: dict[EventId, int] = field(init=False, default_factory=dict)
+
     async def run(self):
         try:
             async with self._tg as tg:
@@ -83,12 +93,20 @@ class EventRouter:
     # can make this better in future
     async def _simple_retry(self):
         while True:
-            await anyio.sleep(1 + random())
+            await anyio.sleep(self._retry_interval_seconds * (1 + random()))
             # list here is a shallow clone for shared mutation
             for e_id, (time, event) in list(self.out_for_delivery.items()):
-                if anyio.current_time() > time + 5:
+                if anyio.current_time() > time + self._retry_age_seconds:
                     self.out_for_delivery[e_id] = (anyio.current_time(), event)
                     await self.external_outbound.send(event)
+                    retries = self._unacked_retries.get(e_id, 0) + 1
+                    self._unacked_retries[e_id] = retries
+                    if retries >= self.resync_unacked_threshold:
+                        await self._trigger_resync(
+                            f"a local event was retransmitted {retries} times "
+                            "without the master indexing it"
+                        )
+                        break
 
     def sender(self) -> Sender[Event]:
         send, recv = channel[Event](error_override_config=_ERROR_CFG)
@@ -142,6 +160,7 @@ class EventRouter:
                 event_id = event.event.event_id
                 if event_id in self.out_for_delivery:
                     self.out_for_delivery.pop(event_id)
+                    self._unacked_retries.pop(event_id, None)
 
                 drained = buf.drain_indexed()
                 if drained:
@@ -215,6 +234,7 @@ class EventRouter:
         # protocol fans out from there.
         self._nack_attempts = 0
         self._foreign_event_streak = 0
+        self._unacked_retries.clear()
         if self.resync_sender is None:
             logger.warning(f"Event sync stalled: {reason}; no resync sender wired")
             return
