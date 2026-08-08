@@ -454,6 +454,14 @@ class Master:
                         case RequestEventLog():
                             # We should just be able to send everything, since other buffers will ignore old messages
                             # rate limit to 1000 at a time
+                            if command.since_idx >= len(self._event_log):
+                                logger.warning(
+                                    f"Cannot serve event log from index "
+                                    f"{command.since_idx}: log holds "
+                                    f"{len(self._event_log)} events. The requester "
+                                    "is synced to another session; its stalled "
+                                    "router's re-election trigger resettles it."
+                                )
                             end = min(command.since_idx + 1000, len(self._event_log))
                             for i, event in enumerate(
                                 self._event_log.read_range(command.since_idx, end),

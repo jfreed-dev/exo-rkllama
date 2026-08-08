@@ -70,6 +70,7 @@ class Node:
             command_sender=router.sender(topics.COMMANDS),
             external_outbound=router.sender(topics.LOCAL_EVENTS),
             external_inbound=router.receiver(topics.GLOBAL_EVENTS),
+            resync_sender=router.sender(topics.CONNECTION_MESSAGES),
         )
 
         logger.info(f"Starting node {node_id}")
@@ -200,6 +201,7 @@ class Node:
                         self.router.sender(topics.COMMANDS),
                         self.router.receiver(topics.GLOBAL_EVENTS),
                         self.router.sender(topics.LOCAL_EVENTS),
+                        resync_sender=self.router.sender(topics.CONNECTION_MESSAGES),
                     )
 
                 if (
