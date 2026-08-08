@@ -35,7 +35,7 @@ to load it. The directory name **must equal the model card id** (slashes become
 ```bash
 # on each node
 mkdir -p /var/lib/exo/rkllm-models/qwen2.5-14b-rkllm
-curl -fL -o /var/lib/exo/rkllm-models/qwen2.5-14b-rkllm/Qwen2.5-14B-Instruct-1M-rk3588-w8a8.rkllm \
+curl -fL -o /var/lib/exo/rkllm-models/qwen2.5-14b-rkllm/Qwen2.5-14B-Instruct-1M-rk3588-w8a8_g128.rkllm \
   "https://huggingface.co/.../resolve/main/....rkllm"
 ```
 
@@ -73,6 +73,13 @@ top_k = 20
 
 Use `resources/inference_model_cards/llama3.2-3b-rkllm.toml` as the template.
 
+Which card fields take effect on the NPU path: `context_length` sizes the
+runtime's context at load and `[sampling_defaults]` initializes its sampling
+(`temperature`, `top_p`, `top_k`, and the three penalties; `min_p` has no RKLLM
+equivalent). Per-request sampling overrides from the API are still dropped by
+both backends, and on the rkllama HTTP path sampling is the server's, not the
+card's. `quantization`, `family`, and `capabilities` are informational.
+
 ### Where the card must live (the gotcha)
 
 Cards load from two places: the built-in `resources/inference_model_cards/` and the
@@ -92,8 +99,9 @@ you drop there is removed on the next restart. Use a built-in card instead, by o
 
 Confirm the card loaded: `curl -s http://<node-ip>:52415/v1/models | jq '.data[].id'`
 should list your `model_id`. Note that `/v1/models` shows every card the node knows
-about; a model only appears in `/models?status=downloaded` or `/ollama/api/tags`
-once an instance has actually loaded it on a node.
+about; `/models?status=downloaded` and `/ollama/api/tags` list a model only once exo
+has resolved its `.rkllm` on a node (which happens when an instance launches), and
+keep listing it afterwards.
 
 ## 4. Launch an instance (exo does not lazy-load)
 
@@ -117,11 +125,19 @@ curl -s "$API/v1/chat/completions" -H 'Content-Type: application/json' \
 ```
 
 Reasoning models such as `deepseek-r1-distill-qwen-14b-rkllm` emit a
-`<think>...</think>` preamble before the final answer. Request enough
-`max_tokens` for both the reasoning block and the response; values smaller than
-the preamble will time out.
+`<think>...</think>` preamble before the final answer (guaranteed on the rkllama
+HTTP path, which templates server-side; the ctypes backend sends a generic
+prompt, where the model usually reasons but is not forced to). Budget
+`max_tokens` for both the reasoning block and the visible answer: the engine
+stops the generation at the cap and finishes with `finish_reason="length"`, so
+a budget smaller than the preamble leaves no answer. Two bounds apply
+regardless: the runtime caps a generation at 2048 tokens (init-time
+`max_new_tokens`, reported as a normal stop), and at single-digit tokens per
+second on the NPU a long generation takes minutes — stream responses and set
+generous client timeouts.
 
-`scripts/smoke.sh` wraps this for the bundled cards.
+`deploy/rk-k3s/scripts/smoke.sh` wraps this for the bundled cards (pass a model
+id as `$1`).
 
 ## 5. Parallelism and keeping instances loaded
 
