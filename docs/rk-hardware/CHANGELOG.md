@@ -5,6 +5,14 @@ PR numbers reference [freed-dev-llc/exo-rkllama](https://github.com/freed-dev-ll
 
 ## Unreleased
 
+- **#39**: on-hardware verification of the `deepseek-r1-distill-qwen-14b-rkllm`
+  flow (14B places, loads, and completes a streamed chat on the RK1 cluster;
+  ~0.8 tok/s decode). MODELS.md's reasoning-model guidance corrected to the
+  measured wire shape: the reasoning block is terminated by `</think>` with no
+  opening `<think>` on the wire (the chat template pre-fills it), so clients
+  split on `</think>`. `smoke.sh`'s chat `curl --max-time` is now
+  `CHAT_MAX_TIME_S` (default 300) — a hardcoded 120 s could never outlast an
+  R1-class preamble.
 - **#36**: adversarial review of the `deepseek-r1-distill-qwen-14b-rkllm`
   onboarding and the RKLLM generation path it exercises. The engine now
   enforces `max_tokens` (previously ignored everywhere outside MLX): it cancels

@@ -4,13 +4,15 @@
 #
 #   scripts/smoke.sh [model-id]
 #
-# Env: NS (default exo-rk), API_PORT (52415), TIMEOUT_S (300).
+# Env: NS (default exo-rk), API_PORT (52415), TIMEOUT_S (300),
+#      CHAT_MAX_TIME_S (300; raise for reasoning models, e.g. 600).
 set -euo pipefail
 
 NS="${NS:-exo-rk}"
 MODEL="${1:-qwen2.5-7b-rkllm}"
 API_PORT="${API_PORT:-52415}"
 TIMEOUT_S="${TIMEOUT_S:-300}"
+CHAT_MAX_TIME_S="${CHAT_MAX_TIME_S:-300}"
 
 say() { printf '>> %s\n' "$*"; }
 
@@ -41,7 +43,7 @@ AWAIT_S=$((TIMEOUT_S < 300 ? TIMEOUT_S : 300))
 curl -fsS "${API}/instance/await?model_id=${MODEL}&timeout_seconds=${AWAIT_S}" >/dev/null
 
 say "requesting a streamed completion"
-RESPONSE=$(curl -fsS -N --max-time 120 "${API}/v1/chat/completions" \
+RESPONSE=$(curl -fsS -N --max-time "${CHAT_MAX_TIME_S}" "${API}/v1/chat/completions" \
   -H 'Content-Type: application/json' \
   -d "{\"model\": \"${MODEL}\", \"stream\": true, \"messages\": [{\"role\": \"user\", \"content\": \"Say hello in five words.\"}]}")
 
