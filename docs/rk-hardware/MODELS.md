@@ -124,20 +124,24 @@ curl -s "$API/v1/chat/completions" -H 'Content-Type: application/json' \
   -d "{\"model\":\"$MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}"
 ```
 
-Reasoning models such as `deepseek-r1-distill-qwen-14b-rkllm` emit a
-`<think>...</think>` preamble before the final answer (guaranteed on the rkllama
-HTTP path, which templates server-side; the ctypes backend sends a generic
-prompt, where the model usually reasons but is not forced to). Budget
+Reasoning models such as `deepseek-r1-distill-qwen-14b-rkllm` emit a reasoning
+preamble before the final answer, on both backends (on the rkllama HTTP path the
+server's chat template forces it; on the ctypes path the model reasons anyway).
+On the wire the block is **terminated by `</think>` with no opening `<think>`** —
+the opening tag is pre-filled by the chat template, never generated — so clients
+should split on `</think>`, not match a `<think>...</think>` span. Budget
 `max_tokens` for both the reasoning block and the visible answer: the engine
 stops the generation at the cap and finishes with `finish_reason="length"`, so
 a budget smaller than the preamble leaves no answer. Two bounds apply
 regardless: the runtime caps a generation at 2048 tokens (init-time
-`max_new_tokens`, reported as a normal stop), and at single-digit tokens per
-second on the NPU a long generation takes minutes — stream responses and set
-generous client timeouts.
+`max_new_tokens`, reported as a normal stop), and a long preamble takes minutes
+at NPU decode rates — measured on the RK1 cluster: the 14B spent ~250 tokens /
+~5 minutes (~0.8 tok/s) reasoning about "Say hello in five words" before a
+one-word answer. Stream responses and set generous client timeouts.
 
 `deploy/rk-k3s/scripts/smoke.sh` wraps this for the bundled cards (pass a model
-id as `$1`).
+id as `$1`); for reasoning models raise the chat timeout, e.g.
+`CHAT_MAX_TIME_S=600 deploy/rk-k3s/scripts/smoke.sh deepseek-r1-distill-qwen-14b-rkllm`.
 
 ## 5. Parallelism and keeping instances loaded
 
