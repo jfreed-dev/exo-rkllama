@@ -3,6 +3,35 @@
 Deltas of the `rk-integration` line against upstream `exo-explore/exo`, newest first.
 PR numbers reference [freed-dev-llc/exo-rkllama](https://github.com/freed-dev-llc/exo-rkllama).
 
+## 2026-08-08: rk-v0.3.1 (election + uplink-stall hardening)
+
+Point release: `ghcr.io/freed-dev-llc/exo-rkllama-rk:rk-v0.3.1` (arm64), same
+upstream base as rk-v0.3.0 (`exo-explore/exo` `54596e6d`). Both fixes target
+the long-uptime failure modes observed during the rk-v0.2.3 soak (issues #37,
+#38, #41).
+
+- **#45** (closes #41): a master that loses the session forfeits its ratcheted
+  election seniority, falling back to its constructed baseline
+  (`--force-master` keeps 1,000,000; non-candidates stay at -1). Closes the
+  path where a demoted ex-master out-ranks the newer incumbent on a #40-style
+  re-election and drags the cluster back to stale state. Residual paths
+  (cancelled or unobserved demotion; no liveness signal in the election
+  ordering) are tracked in #47.
+- **#50** (closes #38): uplink counterpart of #40's downlink stall hatch. A
+  local event retransmitted 12 times (about a minute) without the master
+  indexing it triggers the same re-election nudge, so a node whose
+  announcements are silently dropped (the 32-day asymmetric-nodeIdentities
+  pod) reconverges instead of staying invisible to its peers. The master also
+  logs foreign-session local-event discards (first, then every 100th per
+  session) instead of dropping them silently. Unit-tested against the #37/#40
+  resync harness; not reproduced on hardware.
+- **CI, no image impact** (#46, #49): nix artifacts push to the fork-owned
+  `exo-rkllama` cachix cache, from rk-ci only (a fork token cannot write to
+  upstream's `exo` cache; reads of it are unchanged via `extraPullNames`).
+- **#51**: DaemonSet image pin bumped `rk-v0.3.0` -> `rk-v0.3.1`; rk-image.yml
+  dispatches with an `rk-v*` tag now also push `:latest`, removing the second
+  manual dispatch each release needed to keep `:latest` aligned.
+
 ## 2026-08-08: rk-v0.3.0 (R1-14B verified on hardware)
 
 Minor release on the rk-v0.2.4 content (`exo-explore/exo` `54596e6d`), cut

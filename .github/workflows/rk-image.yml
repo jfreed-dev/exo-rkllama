@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Additional image tag
+        description: Additional image tag (rk-v* release tags also move :latest)
         required: false
         default: latest
   push:
@@ -43,5 +43,6 @@ jobs:
           tags: |
             ghcr.io/freed-dev-llc/exo-rkllama-rk:${{ inputs.tag || 'latest' }}
             ghcr.io/freed-dev-llc/exo-rkllama-rk:${{ github.sha }}
+            ${{ startsWith(inputs.tag, 'rk-v') && 'ghcr.io/freed-dev-llc/exo-rkllama-rk:latest' || '' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
