@@ -140,8 +140,10 @@ at NPU decode rates — measured on the RK1 cluster: the 14B spent ~250 tokens /
 one-word answer. Stream responses and set generous client timeouts.
 
 `deploy/rk-k3s/scripts/smoke.sh` wraps this for the bundled cards (pass a model
-id as `$1`); for reasoning models raise the chat timeout, e.g.
-`CHAT_MAX_TIME_S=600 deploy/rk-k3s/scripts/smoke.sh deepseek-r1-distill-qwen-14b-rkllm`.
+id as `$1`). The smoke bounds its chat with `CHAT_MAX_TOKENS` (default 128), so
+reasoning models finish inside `CHAT_MAX_TIME_S` (300 s) with a `length`
+finish on images ≥ rk-v0.3.0; on older images `max_tokens` is ignored and an
+R1-class chat can run for tens of minutes regardless of either timeout knob.
 
 ## 5. Parallelism and keeping instances loaded
 
