@@ -36,7 +36,6 @@ jobs:
         with:
           name: exo-rkllama
           extraPullNames: exo
-          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
       - name: Build Metal packages (macOS only)
         if: runner.os == 'macOS'
