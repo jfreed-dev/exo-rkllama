@@ -57,7 +57,7 @@ supports_tensor = false
 tasks = ["TextGeneration"]
 backends = ["RkllmNpu"]
 family = "qwen"
-quantization = "w8a8"
+quantization = "w8a8_g128"       # matches the artifact filename
 base_model = "Qwen2.5-14B-Instruct-1M"
 capabilities = ["text"]
 context_length = 4096
@@ -91,7 +91,9 @@ you drop there is removed on the next restart. Use a built-in card instead, by o
   changing them (`kubectl -n exo-rk rollout restart ds/exo`).
 
 Confirm the card loaded: `curl -s http://<node-ip>:52415/v1/models | jq '.data[].id'`
-should list your `model_id`.
+should list your `model_id`. Note that `/v1/models` shows every card the node knows
+about; a model only appears in `/models?status=downloaded` or `/ollama/api/tags`
+once an instance has actually loaded it on a node.
 
 ## 4. Launch an instance (exo does not lazy-load)
 
@@ -101,7 +103,7 @@ single-node and whole-model: it loads the full model on one node's NPU. Launch f
 
 ```bash
 API=http://<node-ip>:52415
-MODEL=qwen2.5-14b-rkllm
+MODEL=qwen2.5-14b-rkllm            # or deepseek-r1-distill-qwen-14b-rkllm
 
 # 1. compute a placement, 2. create the instance, 3. wait for it to load
 placement=$(curl -s "$API/instance/placement?model_id=$MODEL&sharding=Pipeline&instance_meta=RkllmSingleNode&min_nodes=1")
@@ -113,6 +115,11 @@ curl -sN "$API/instance/await?model_id=$MODEL"   # emits {"type":"ready"} when l
 curl -s "$API/v1/chat/completions" -H 'Content-Type: application/json' \
   -d "{\"model\":\"$MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}"
 ```
+
+Reasoning models such as `deepseek-r1-distill-qwen-14b-rkllm` emit a
+`<think>...</think>` preamble before the final answer. Request enough
+`max_tokens` for both the reasoning block and the response; values smaller than
+the preamble will time out.
 
 `scripts/smoke.sh` wraps this for the bundled cards.
 
