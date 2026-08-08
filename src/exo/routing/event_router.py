@@ -6,6 +6,7 @@ from anyio import BrokenResourceError, ClosedResourceError
 from anyio.abc import CancelScope
 from loguru import logger
 
+from exo.routing.connection_message import ConnectionMessage
 from exo.shared.types.commands import ForwarderCommand, RequestEventLog
 from exo.shared.types.common import SessionId, SystemId
 from exo.shared.types.events import (
@@ -45,6 +46,11 @@ class EventRouter:
     command_sender: Sender[ForwarderCommand]
     external_inbound: Receiver[GlobalForwarderEvent]
     external_outbound: Sender[LocalForwarderEvent]
+    # When sync stalls, sends a local connection nudge so the node re-runs its
+    # master election (see _trigger_resync). None disables the escape hatch.
+    resync_sender: Sender[ConnectionMessage] | None = None
+    resync_nack_threshold: int = 8
+    resync_foreign_threshold: int = 100
     _system_id: SystemId = field(init=False, default_factory=SystemId)
     internal_outbound: list[Sender[IndexedEvent]] = field(
         init=False, default_factory=list
@@ -61,6 +67,8 @@ class EventRouter:
     _nack_attempts: int = field(init=False, default=0)
     _nack_base_seconds: float = field(init=False, default=0.5)
     _nack_cap_seconds: float = field(init=False, default=10.0)
+
+    _foreign_event_streak: int = field(init=False, default=0)
 
     async def run(self):
         try:
@@ -118,7 +126,15 @@ class EventRouter:
         with self.external_inbound as events:
             async for event in events:
                 if event.session != self.session_id:
+                    self._foreign_event_streak += 1
+                    if self._foreign_event_streak >= self.resync_foreign_threshold:
+                        await self._trigger_resync(
+                            f"{self._foreign_event_streak} consecutive events "
+                            f"arrived for foreign session {event.session} while "
+                            f"none arrived for ours ({self.session_id})"
+                        )
                     continue
+                self._foreign_event_streak = 0
                 if event.origin != self.session_id.master_node_id:
                     continue
 
@@ -165,6 +181,11 @@ class EventRouter:
             delay: float = self._nack_base_seconds * (2.0**self._nack_attempts)
             delay = min(self._nack_cap_seconds, delay)
             self._nack_attempts += 1
+            if self._nack_attempts >= self.resync_nack_threshold:
+                await self._trigger_resync(
+                    f"{self._nack_attempts} event log requests from index "
+                    f"{since_idx} went unanswered"
+                )
             try:
                 await anyio.sleep(delay)
                 logger.info(
@@ -179,3 +200,25 @@ class EventRouter:
             finally:
                 if self._nack_cancel_scope is scope:
                     self._nack_cancel_scope = None
+
+    async def _trigger_resync(self, reason: str) -> None:
+        # A router that cannot make event-log progress is synced to a session
+        # whose master no longer serves it, e.g. after pods restart at
+        # different times and the old master's ephemeral node id disappears
+        # with it. A fresh election converges every node onto the live
+        # session: the incumbent wins re-election without disruption
+        # (is_new_master stays False for nodes already on the winning
+        # session), while diverged nodes get their router and worker rebuilt
+        # by Node's election handling. ConnectionMessage is the trigger
+        # elections already react to, and its topic never publishes to the
+        # network, so this only ignites the local campaign; the election
+        # protocol fans out from there.
+        self._nack_attempts = 0
+        self._foreign_event_streak = 0
+        if self.resync_sender is None:
+            logger.warning(f"Event sync stalled: {reason}; no resync sender wired")
+            return
+        logger.warning(
+            f"Event sync stalled: {reason}; triggering a cluster re-election"
+        )
+        await self.resync_sender.send(ConnectionMessage(connected=True))

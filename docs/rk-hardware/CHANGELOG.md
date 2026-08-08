@@ -5,6 +5,22 @@ PR numbers reference [freed-dev-llc/exo-rkllama](https://github.com/freed-dev-ll
 
 ## Unreleased
 
+- **#40** (fixes #37): stalled event-log sync now triggers a master
+  re-election instead of retrying forever. Pods restarted at different times
+  could stay synced to a dead session (node ids are ephemeral): the router
+  nacked the same missing index forever while its session filter dropped every
+  replayed answer, so instance launches were acknowledged but never
+  materialized until every pod was deleted at once. `EventRouter` now counts
+  unanswered nack attempts (default 8, roughly 45 s under the existing
+  0.5 s-base/10 s-cap backoff) and consecutive foreign-session events with
+  zero in-session progress (default 100); past either threshold it sends
+  itself a local `ConnectionMessage` to re-run the master election. The
+  connection-messages topic never publishes to the network, so only the local
+  campaign ignites and the election protocol fans out from there. Incumbents
+  win re-election with `is_new_master=False` (no disruption on healthy
+  nodes); diverged nodes rebuild router and worker onto the winning session.
+  The master also logs a warning when a requested event-log range is beyond
+  its tail, which was previously indistinguishable from silence.
 - **#39**: on-hardware verification of the `deepseek-r1-distill-qwen-14b-rkllm`
   flow (14B places, loads, and completes a streamed chat on the RK1 cluster;
   ~0.8 tok/s decode). MODELS.md's reasoning-model guidance corrected to the
