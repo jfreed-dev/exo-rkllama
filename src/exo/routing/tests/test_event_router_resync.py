@@ -5,6 +5,13 @@ to sessions whose master no longer exists. Such a router either nacks the same
 missing index forever, or watches another session's events stream past its
 session filter. Both stalls must trigger a local ConnectionMessage so the node
 re-runs its master election and converges onto the live session.
+
+Also covers exo-rkllama#38, the uplink mirror of those downlink stalls: a
+node whose local events are never indexed by the master (it keeps receiving
+global events, but the master discards or never hears its uplink) retransmits
+the same events forever and silently never appears in cluster state. After
+enough retransmissions of one event the router must fire the same re-election
+nudge.
 """
 
 import pytest
@@ -29,7 +36,11 @@ FOREIGN_SESSION = SessionId(master_node_id=FOREIGN_MASTER, election_clock=1)
 
 class Harness:
     def __init__(
-        self, *, nack_threshold: int = 8, foreign_threshold: int = 100
+        self,
+        *,
+        nack_threshold: int = 8,
+        foreign_threshold: int = 100,
+        unacked_threshold: int = 12,
     ) -> None:
         self.command_sender, self.command_receiver = channel[ForwarderCommand]()
         self.global_sender, self.global_receiver = channel[GlobalForwarderEvent]()
@@ -43,7 +54,12 @@ class Harness:
             resync_sender=self.resync_sender,
             resync_nack_threshold=nack_threshold,
             resync_foreign_threshold=foreign_threshold,
+            resync_unacked_threshold=unacked_threshold,
         )
+
+    def speed_up_retries(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(self.router, "_retry_interval_seconds", 0.005)
+        monkeypatch.setattr(self.router, "_retry_age_seconds", 0.0)
 
 
 def event_for(session: SessionId, origin: NodeId, idx: int) -> GlobalForwarderEvent:
@@ -95,6 +111,52 @@ async def test_unanswered_nacks_trigger_reelection(
         assert nudge == ConnectionMessage(connected=True)
         assert any(isinstance(r.command, RequestEventLog) for r in requests)
         tg.cancel_scope.cancel()
+
+
+@pytest.mark.anyio
+async def test_unacked_local_events_trigger_reelection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    h = Harness(unacked_threshold=3)
+    h.speed_up_retries(monkeypatch)
+    sender = h.router.sender()
+    async with create_task_group() as tg:
+        tg.start_soon(h.router.run)
+        # The master never echoes this event back as indexed, so retransmits
+        # accumulate until the uplink detector fires.
+        await sender.send(TestEvent())
+        with fail_after(5):
+            nudge = (await h.resync_receiver.receive_at_least(1))[0]
+        assert nudge == ConnectionMessage(connected=True)
+        h.router.shutdown()
+
+
+@pytest.mark.anyio
+async def test_indexed_local_event_resets_unacked_detector(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    h = Harness(unacked_threshold=3)
+    h.speed_up_retries(monkeypatch)
+    sender = h.router.sender()
+    async with create_task_group() as tg:
+        tg.start_soon(h.router.run)
+        await sender.send(TestEvent())
+        with fail_after(2):
+            sent = (await h.local_receiver.receive_at_least(1))[0]
+        # The master indexes the event; the ack must clear the retry counter
+        # so no re-election fires afterwards.
+        await h.global_sender.send(
+            GlobalForwarderEvent(
+                origin_idx=0, origin=OUR_MASTER, session=OUR_SESSION, event=sent.event
+            )
+        )
+        with fail_after(2):
+            while h.router.out_for_delivery:
+                await sleep(0.01)
+        assert h.router._unacked_retries == {}  # pyright: ignore[reportPrivateUsage]
+        await sleep(0.1)
+        assert h.resync_receiver.collect() == []
+        h.router.shutdown()
 
 
 @pytest.mark.anyio

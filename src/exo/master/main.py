@@ -146,6 +146,7 @@ class Master:
         self._event_log = DiskEventLog(EXO_EVENT_LOG_DIR / "master")
         self._pending_traces: dict[TaskId, dict[int, list[TraceEventData]]] = {}
         self._expected_ranks: dict[TaskId, set[int]] = {}
+        self._foreign_local_event_counts: dict[SessionId, int] = {}
 
     async def run(self):
         logger.info("Starting Master")
@@ -500,8 +501,19 @@ class Master:
     async def _event_processor(self) -> None:
         with self.local_event_receiver as local_events:
             async for local_event in local_events:
-                # Discard all events not from our session
+                # Discard all events not from our session. Log it: a sender
+                # stuck on a foreign session retransmits forever and its node
+                # silently never appears in cluster state (exo-rkllama#38).
                 if local_event.session != self.session_id:
+                    count = self._foreign_local_event_counts.get(local_event.session, 0)
+                    if count % 100 == 0:
+                        logger.warning(
+                            f"Discarding local event from foreign session "
+                            f"{local_event.session} (origin {local_event.origin}, "
+                            f"{count + 1} discarded so far); the sender's resync "
+                            "hatch should re-elect it onto this session"
+                        )
+                    self._foreign_local_event_counts[local_event.session] = count + 1
                     continue
                 self._multi_buffer.ingest(
                     local_event.origin_idx,
