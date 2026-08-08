@@ -3,6 +3,11 @@
 Mirrors the single-task loop of the image engine: ``submit`` enqueues a text task,
 ``step`` advances the active generation and yields one response per call. There is no
 batching (the NPU runs one model, one stream) and no disaggregated prefill.
+
+The backends take no per-request limits, so ``max_output_tokens`` is enforced here:
+the engine counts streamed pieces (one fragment ~= one token), cancels the backend at
+the cap, and finishes the stream with reason ``length`` instead of silently ignoring
+the request's token budget.
 """
 
 from collections import deque
@@ -77,6 +82,8 @@ class RkllmEngine(Engine):
                 self._cancelled_tasks.add(cancel_id)
 
         cancelled = False
+        max_tokens = task_params.max_output_tokens
+        emitted = 0
         try:
             for piece in self.backend.generate(task_params):
                 drain_cancels()
@@ -85,17 +92,38 @@ class RkllmEngine(Engine):
                     cancelled = True
                     yield (task_id, CancelledResponse())
                     return
-                if piece.text or piece.finished:
+                if not (piece.text or piece.finished):
+                    continue
+                if (
+                    not piece.finished
+                    and max_tokens is not None
+                    and emitted >= max_tokens
+                ):
+                    # Token budget exhausted: stop the backend and end the stream
+                    # with a length finish rather than silently over-generating.
+                    self.backend.cancel()
                     yield (
                         task_id,
                         TokenChunk(
                             model=model_id,
-                            text=piece.text,
+                            text="",
                             token_id=piece.token_id,
                             usage=None,
-                            finish_reason="stop" if piece.finished else None,
+                            finish_reason="length",
                         ),
                     )
+                    return
+                emitted += 1
+                yield (
+                    task_id,
+                    TokenChunk(
+                        model=model_id,
+                        text=piece.text,
+                        token_id=piece.token_id,
+                        usage=None,
+                        finish_reason=piece.finish_reason if piece.finished else None,
+                    ),
+                )
         except Exception as e:
             logger.exception("RKLLM generation failed")
             yield (

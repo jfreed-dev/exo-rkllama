@@ -22,7 +22,9 @@ from exo.shared.types.worker.runner_response import ModelLoadingResponse
 
 # RKLLM does not expose token ids in its result struct (only text fragments), so
 # backends emit a running counter here and the engine treats it as opaque.
-type FinishReasonRkllm = str | None
+# RKLLM's finish callback carries no reason, so backends can only report "stop";
+# "length" is emitted by the engine when it enforces a max-output-tokens cap.
+type FinishReasonRkllm = Literal["stop", "length"] | None
 
 
 @dataclass(frozen=True)

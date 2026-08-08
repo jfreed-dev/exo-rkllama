@@ -18,6 +18,7 @@ from collections.abc import Iterator
 
 from loguru import logger
 
+from exo.shared.models.model_cards import SamplingValues
 from exo.worker.engines.rkllm.detection import get_rkllm_library_path
 
 
@@ -206,6 +207,7 @@ class RKLLMRuntime:
         model_path: str,
         max_context_len: int = 4096,
         max_new_tokens: int = 2048,
+        sampling: SamplingValues | None = None,
     ) -> None:
         self._lib = load_rkllm_library()
         self._configure_signatures()
@@ -215,7 +217,7 @@ class RKLLMRuntime:
         self._error: str | None = None
         # Keep a reference so the callback is not garbage collected.
         self._callback = RKLLMCallback(self._on_result)
-        self._init_model(model_path, max_context_len, max_new_tokens)
+        self._init_model(model_path, max_context_len, max_new_tokens, sampling)
 
     def _configure_signatures(self) -> None:
         self._lib.rkllm_createDefaultParam.argtypes = []
@@ -262,12 +264,32 @@ class RKLLMRuntime:
         return 0
 
     def _init_model(
-        self, model_path: str, max_context_len: int, max_new_tokens: int
+        self,
+        model_path: str,
+        max_context_len: int,
+        max_new_tokens: int,
+        sampling: SamplingValues | None,
     ) -> None:
         param = self._lib.rkllm_createDefaultParam()
         param.model_path = model_path.encode("utf-8")
         param.max_context_len = max_context_len
         param.max_new_tokens = max_new_tokens
+        # Sampling is init-time-only in RKLLM, so the model card's declared
+        # defaults are the values every generation on this model runs with.
+        # Unset fields keep the library defaults; min_p has no RKLLM equivalent.
+        if sampling is not None:
+            if sampling.temperature is not None:
+                param.temperature = sampling.temperature
+            if sampling.top_p is not None:
+                param.top_p = sampling.top_p
+            if sampling.top_k is not None:
+                param.top_k = sampling.top_k
+            if sampling.repetition_penalty is not None:
+                param.repeat_penalty = sampling.repetition_penalty
+            if sampling.frequency_penalty is not None:
+                param.frequency_penalty = sampling.frequency_penalty
+            if sampling.presence_penalty is not None:
+                param.presence_penalty = sampling.presence_penalty
         param.skip_special_token = True
         param.is_async = False
 

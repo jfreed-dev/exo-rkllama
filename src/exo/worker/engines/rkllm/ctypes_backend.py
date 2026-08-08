@@ -24,7 +24,13 @@ class RkllmCtypesBackend(RkllmBackend):
 
     def load(self, model_card: ModelCard) -> Iterable[ModelLoadingResponse]:
         model_path = _resolve_model_path(model_card.model_id)
-        self._runtime = RKLLMRuntime(model_path)
+        # The card owns the runtime configuration: its context_length sizes the
+        # NPU context and its sampling_defaults become the init-time sampling.
+        self._runtime = RKLLMRuntime(
+            model_path,
+            max_context_len=model_card.context_length or 4096,
+            sampling=model_card.sampling_defaults,
+        )
         total = model_card.n_layers
         yield ModelLoadingResponse(layers_loaded=total, total=total)
 

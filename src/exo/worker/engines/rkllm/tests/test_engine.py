@@ -61,13 +61,14 @@ def _model_card() -> ModelCard:
     )
 
 
-def _task() -> TextGeneration:
+def _task(max_output_tokens: int | None = None) -> TextGeneration:
     return TextGeneration(
         instance_id=InstanceId(),
         command_id=CommandId(),
         task_params=TextGenerationTaskParams(
             model=ModelId("qwen2.5-7b-rkllm"),
             input=[InputMessage(role="user", content=InputMessageContent("hi"))],
+            max_output_tokens=max_output_tokens,
         ),
     )
 
@@ -127,6 +128,34 @@ def test_engine_cancellation() -> None:
     assert any(isinstance(r, CancelledResponse) for r in out)
     assert not any(isinstance(r, FinishedResponse) for r in out)
     assert backend.cancelled is True
+
+
+def test_engine_respects_max_output_tokens() -> None:
+    backend = FakeBackend(
+        [TokenPiece(text=f"t{i}", token_id=i, finished=False) for i in range(5)]
+    )
+    engine = _make_engine(backend)
+
+    out = _drain(engine, _task(max_output_tokens=2))
+
+    tokens = [r for r in out if isinstance(r, TokenChunk)]
+    assert [t.text for t in tokens] == ["t0", "t1", ""]
+    assert tokens[-1].finish_reason == "length"
+    assert backend.cancelled is True
+    assert isinstance(out[-1], FinishedResponse)
+
+
+def test_engine_passes_through_backend_finish_reason() -> None:
+    backend = FakeBackend(
+        [TokenPiece(text="t", token_id=0, finished=True, finish_reason="length")]
+    )
+    engine = _make_engine(backend)
+
+    out = _drain(engine, _task())
+
+    tokens = [r for r in out if isinstance(r, TokenChunk)]
+    assert tokens[-1].finish_reason == "length"
+    assert isinstance(out[-1], FinishedResponse)
 
 
 def test_select_backend_ctypes(monkeypatch: pytest.MonkeyPatch) -> None:

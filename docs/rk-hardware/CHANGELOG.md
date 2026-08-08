@@ -3,6 +3,24 @@
 Deltas of the `rk-integration` line against upstream `exo-explore/exo`, newest first.
 PR numbers reference [freed-dev-llc/exo-rkllama](https://github.com/freed-dev-llc/exo-rkllama).
 
+## Unreleased
+
+- **#36**: adversarial review of the `deepseek-r1-distill-qwen-14b-rkllm`
+  onboarding and the RKLLM generation path it exercises. The engine now
+  enforces `max_tokens` (previously ignored everywhere outside MLX): it cancels
+  the backend at the cap and finishes the stream with reason `length`, and it
+  passes backend finish reasons through instead of hardcoding `stop`. The
+  ctypes backend initializes the runtime from the model card —
+  `context_length` sizes `max_context_len` and `sampling_defaults` set the
+  init-time sampling (`temperature`/`top_p`/`top_k`/penalties) — so declared
+  card values now take effect (behavior change: library defaults were used
+  before). Per-request sampling overrides remain dropped by both backends, and
+  runtime-cap truncations still report `stop` (RKLLM's FINISH carries no
+  reason); both are documented in MODELS.md. The new card declares
+  `reasoning_dialect = "post_last_user"`. MODELS.md also fixes the
+  quantization/artifact-filename mismatch and the smoke-script path, and
+  scopes the `<think>`-preamble guidance to what each backend actually does.
+
 ## 2026-07-06: rk-v0.2.3 (hub-add error guidance)
 
 Point release: `ghcr.io/freed-dev-llc/exo-rkllama-rk:rk-v0.2.3` (arm64), same
