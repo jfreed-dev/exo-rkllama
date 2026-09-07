@@ -29,6 +29,7 @@ To run EXO from source:
 git clone https://github.com/exo-explore/exo.git
 cd exo/dashboard
 npm install && npm run build && cd ..
+uv sync --extra mlx
 uv run exo
 ```
 

@@ -148,7 +148,7 @@ Then restart the Nix daemon: `sudo launchctl kickstart -k system/org.nixos.nix-d
     --force
   ```
 
-Clone the repo, build the dashboard, and run exo:
+Clone the repo, build the dashboard, install the dependencies, and run exo:
 
 ```bash
 # Clone exo
@@ -156,6 +156,9 @@ git clone https://github.com/exo-explore/exo
 
 # Build dashboard
 cd exo/dashboard && npm install && npm run build && cd ..
+
+# Install Python dependencies, including the MLX backend
+uv sync --extra mlx
 
 # Run exo
 uv run exo
@@ -206,7 +209,7 @@ rustup toolchain install nightly
 
 **Note:** The `macmon` package is macOS-only and not required for Linux.
 
-Clone the repo, build the dashboard, and run exo:
+Clone the repo, build the dashboard, install the dependencies, and run exo:
 
 ```bash
 # Clone exo
@@ -214,6 +217,10 @@ git clone https://github.com/exo-explore/exo
 
 # Build dashboard
 cd exo/dashboard && npm install && npm run build && cd ..
+
+# Install Python dependencies with the MLX backend for your hardware
+# (NVIDIA: --extra mlx-cuda13 or --extra mlx-cuda12)
+uv sync --extra mlx-cpu
 
 # Run exo
 uv run exo

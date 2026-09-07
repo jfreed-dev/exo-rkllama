@@ -16,10 +16,10 @@ check:
     uv run basedpyright --project pyproject.toml
 
 sync:
-    uv sync --all-packages
+    uv sync --all-packages --extra mlx
 
 sync-clean:
-    uv sync --all-packages --force-reinstall --no-cache
+    uv sync --all-packages --extra mlx --force-reinstall --no-cache
 
 rust-rebuild:
     PYO3_PYTHON="$(uv run python -c 'import sys; print(sys.executable)')" cargo run --bin stub_gen
